@@ -11,6 +11,10 @@
   Inspect, focus, and verify UI and 3D work at full quality.
 </p>
 
+<p align="center">
+  <a href="https://github.com/ReyJ94/SceneProof/releases/tag/v0.1.0"><img alt="Release v0.1.0" src="https://img.shields.io/badge/release-v0.1.0-E6A34D?style=flat-square" /></a>
+</p>
+
 SceneProof lets coding agents see the interfaces and Three.js scenes they
 build. It reconstructs the real source, exposes the structure that explains the
 render, and produces exactly the context or detail view needed for reliable
