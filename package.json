@@ -1,0 +1,73 @@
+{
+  "name": "sceneproof",
+  "version": "0.1.0",
+  "description": "Source-grounded visual perception for coding agents—inspect, focus, and verify UI and 3D work at full quality.",
+  "private": false,
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "sceneproof": "./src/cli.ts",
+    "uiscene": "./src/cli.ts"
+  },
+  "files": [
+    "src",
+    "docs",
+    "README.md",
+    "LICENSE"
+  ],
+  "packageManager": "bun@1.3.14",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ReyJ94/SceneProof.git"
+  },
+  "homepage": "https://github.com/ReyJ94/SceneProof#readme",
+  "bugs": {
+    "url": "https://github.com/ReyJ94/SceneProof/issues"
+  },
+  "keywords": [
+    "coding-agents",
+    "visual-testing",
+    "ui",
+    "threejs",
+    "react",
+    "source-rendering",
+    "agent-tools"
+  ],
+  "scripts": {
+    "build": "bun build --compile --allow-unresolved '' --outfile dist/sceneproof src/cli.ts",
+    "check": "bun run lint && bun run typecheck && bun run test && bun run build",
+    "cli": "bun src/cli.ts",
+    "format": "ultracite fix .",
+    "format:check": "ultracite check .",
+    "lint": "ultracite check .",
+    "lint:fix": "ultracite fix .",
+    "prepack": "bun run check",
+    "test": "bun test --timeout 30000 tests/cli.test.ts tests/react-renderer.test.ts",
+    "test:cli": "bun test --timeout 30000 tests/cli.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "bun": ">=1.3.14"
+  },
+  "dependencies": {
+    "@tailwindcss/postcss": "4.3.3",
+    "commander": "15.0.0",
+    "esbuild": "0.28.1",
+    "playwright-core": "1.61.1",
+    "postcss": "8.5.22",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "three": "0.185.1",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.5",
+    "@types/bun": "1.3.14",
+    "@types/node": "26.1.1",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "@types/three": "0.185.1",
+    "typescript": "7.0.2",
+    "ultracite": "7.9.4"
+  }
+}
