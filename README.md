@@ -19,6 +19,65 @@ visual judgment.
 Agents can finally recognize what they made, understand why it looks wrong, and
 prove that it is visually finished—instead of coding UI and 3D blind.
 
+## Install
+
+SceneProof requires [Bun](https://bun.com/docs/installation) 1.3.14 or newer
+and a local Chrome or Chromium installation.
+
+```bash
+bun add --global github:ReyJ94/SceneProof
+sceneproof --help
+```
+
+That is the complete installation. It installs SceneProof directly from this
+repository, including its runtime dependencies and global `sceneproof` command.
+
+<details>
+<summary><strong>I do not have Bun yet</strong></summary>
+
+On macOS or Linux:
+
+```bash
+curl -fsSL https://bun.com/install | bash
+```
+
+On Windows PowerShell:
+
+```powershell
+powershell -c "irm bun.sh/install.ps1|iex"
+```
+
+Open a new terminal, confirm `bun --version`, then run the SceneProof install
+command above.
+
+</details>
+
+<details>
+<summary><strong><code>sceneproof: command not found</code></strong></summary>
+
+Bun places global commands in `~/.bun/bin`. If that directory is not already on
+your PATH, add these lines to `~/.zshrc` or `~/.bashrc`, then open a new
+terminal:
+
+```bash
+export BUN_INSTALL="$HOME/.bun"
+export PATH="$BUN_INSTALL/bin:$PATH"
+```
+
+</details>
+
+<details>
+<summary><strong>Chrome is not detected</strong></summary>
+
+Point SceneProof at the local executable:
+
+```bash
+export SCENEPROOF_CHROME_PATH="/path/to/chrome"
+sceneproof --help
+```
+
+</details>
+
 ## The missing development loop
 
 Coding agents are strong at reading source and changing it. Their visual
@@ -106,30 +165,6 @@ remains formatted for humans.
 
 There is no hydration command language, browser lifecycle API, or report-query
 DSL for the agent to manage. SceneProof owns that complexity.
-
-## Installation
-
-SceneProof is Bun-native and uses an existing local Chrome or Chromium
-installation. The linked source-mode command is the recommended path for
-inspecting arbitrary workspaces.
-
-<details>
-<summary><strong>Install from source</strong></summary>
-
-```bash
-git clone https://github.com/ReyJ94/SceneProof.git
-cd SceneProof
-bun install
-bun link
-sceneproof --help
-```
-
-The legacy `uiscene` binary remains available as a compatibility alias.
-
-If Chrome is not installed at a standard Linux path, set
-`SCENEPROOF_CHROME_PATH` to the executable.
-
-</details>
 
 ## First visual proof
 
@@ -250,6 +285,18 @@ compiled binary is experimental for arbitrary workspace entries with nested
 package imports; linked source mode is the supported development path.
 
 ## Development
+
+<details>
+<summary><strong>Work from source</strong></summary>
+
+```bash
+git clone https://github.com/ReyJ94/SceneProof.git
+cd SceneProof
+bun install --frozen-lockfile
+bun run cli --help
+```
+
+</details>
 
 <details>
 <summary><strong>Local quality gate</strong></summary>
