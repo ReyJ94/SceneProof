@@ -3,18 +3,28 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
+const packageVersion = (
+  JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")) as {
+    version: string;
+  }
+).version;
 const entry = resolve(root, "tests/fixtures/DemoCard.tsx");
 const threeEntry = resolve(root, "examples/three/object-gallery.ts");
 const invisiblePointsEntry = resolve(root, "tests/fixtures/InvisiblePoints.ts");
+const advancedSceneEntry = resolve(root, "tests/fixtures/AdvancedScene.ts");
+const advancedProps = resolve(root, "tests/fixtures/advanced-props.json");
+const actionInput = resolve(root, "tests/fixtures/action-input.json");
 const props = resolve(root, "tests/fixtures/props.json");
 const INVISIBLE_ATTRIBUTE_WARNING = /aOpacity.*maximum is 0/i;
 const INTERNAL_COMMAND =
@@ -25,6 +35,16 @@ const MISSING_EXPORT_ERROR = /export.*Missing.*not found/i;
 const REGION_EXCEEDS_VIEWPORT_ERROR = /region.*exceeds viewport.*800x600/i;
 const SCOUT_DETAIL_COMMAND = /sceneproof render/;
 const SCOUT_FOCUS_COMMAND = /--look-at -2\.4,0\.2,0/;
+const SHA_256_DIGEST = /^sha256:/;
+const MISSING_PROPS_ERROR = /props.*not found|ENOENT/i;
+const SOURCE_FRAMING_COMMAND = /--framing source/;
+const SOURCE_REGION_COMMAND = /render-region.*--region/;
+const TARGET_FRAMING_COMMAND = /--framing (?:fit|fill)/;
+const SCALE_FOUR_COMMAND = /--scale 4/;
+const DIRECT_COMMAND_GUIDANCE = /direct command/i;
+const LOCAL_RENDER_GUIDANCE = /local-render|unsandboxed/i;
+const CHROMIUM_PERMISSION_ERROR =
+  /Chromium could not start.*unsandboxed\/local-render permission/is;
 const STRUCTURAL_REASON = /structural/i;
 const SCENEPROOF_USAGE = /Usage: sceneproof/;
 
@@ -34,7 +54,10 @@ type CliResult = {
   readonly stderr: string;
 };
 
-function runCli(args: readonly string[]): CliResult {
+function runCli(
+  args: readonly string[],
+  environment: Readonly<Record<string, string>> = {}
+): CliResult {
   const result = spawnSync(
     process.execPath,
     [resolve(root, "src/cli.ts"), ...args],
@@ -45,6 +68,7 @@ function runCli(args: readonly string[]): CliResult {
         ...process.env,
         UISCENE_CHROME_PATH:
           process.env.UISCENE_CHROME_PATH ?? "/usr/bin/google-chrome",
+        ...environment,
       },
     }
   );
@@ -76,7 +100,7 @@ function readFullEvidence(briefing: {
   return JSON.parse(readFileSync(briefing.evidence.full.path, "utf8"));
 }
 
-test("presents SceneProof through six stable agent-facing commands", () => {
+test("presents SceneProof through stable agent-facing commands and diagnostics", () => {
   const result = runCli(["--help"]);
 
   assert.equal(result.status, 0, result.stderr);
@@ -88,10 +112,344 @@ test("presents SceneProof through six stable agent-facing commands", () => {
     "render",
     "render-region",
     "scout",
+    "doctor",
   ]) {
     assert.match(result.stdout, new RegExp(`\\b${command}\\b`));
   }
   assert.doesNotMatch(result.stdout, INTERNAL_COMMAND);
+});
+
+test("reports the package version through the CLI", () => {
+  const result = runCli(["--version"]);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), packageVersion);
+});
+
+test("routes a selected Three.js factory by contract rather than export name", () => {
+  const automatic = runCli([
+    "tree",
+    advancedSceneEntry,
+    "--export",
+    "createConfiguredScene",
+    "--props",
+    advancedProps,
+    "--renderer",
+    "auto",
+    "--width",
+    "320",
+    "--height",
+    "240",
+  ]);
+
+  assert.equal(automatic.status, 0, automatic.stderr);
+  const tree = JSON.parse(automatic.stdout);
+  assert.equal(tree.renderer, "three");
+  assert.equal(tree.fixture.props.path, advancedProps);
+  assert.match(tree.fixture.props.digest, SHA_256_DIGEST);
+  assert.equal(tree.roots[0].id, "three:advanced-fixture");
+});
+
+test("loads a reusable inspector from repository-root scripts without an app adapter", () => {
+  const repository = mkdtempSync(join(tmpdir(), "sceneproof-repository-"));
+  const sourceDirectory = join(repository, "src");
+  const inspectorDirectory = join(repository, "scripts/sceneproof");
+  const fixtureDirectory = join(inspectorDirectory, "fixtures");
+  const productionEntry = join(sourceDirectory, "production-scene.ts");
+  const inspectorEntry = join(inspectorDirectory, "gallery.scene.ts");
+  const fixture = join(fixtureDirectory, "selected.json");
+
+  try {
+    mkdirSync(sourceDirectory, { recursive: true });
+    mkdirSync(fixtureDirectory, { recursive: true });
+    writeFileSync(
+      productionEntry,
+      `export { createConfiguredScene } from ${JSON.stringify(advancedSceneEntry)};\n`
+    );
+    writeFileSync(
+      inspectorEntry,
+      [
+        'import { createConfiguredScene } from "../../src/production-scene";',
+        "export const createGalleryEvidence = createConfiguredScene;",
+        "",
+      ].join("\n")
+    );
+    writeFileSync(fixture, readFileSync(advancedProps));
+
+    const result = runCli([
+      "tree",
+      inspectorEntry,
+      "--export",
+      "createGalleryEvidence",
+      "--props",
+      fixture,
+      "--renderer",
+      "auto",
+      "--width",
+      "320",
+      "--height",
+      "240",
+    ]);
+
+    assert.equal(result.status, 0, result.stderr);
+    const tree = JSON.parse(result.stdout);
+    assert.equal(tree.renderer, "three");
+    assert.equal(tree.fixture.props.path, fixture);
+    assert.equal(tree.roots[0].id, "three:advanced-fixture");
+  } finally {
+    rmSync(repository, { force: true, recursive: true });
+  }
+});
+
+test("rejects missing Three.js props instead of silently ignoring them", () => {
+  const missing = resolve(tmpdir(), "sceneproof-missing-props.json");
+  const result = runCli([
+    "tree",
+    advancedSceneEntry,
+    "--export",
+    "createScene",
+    "--renderer",
+    "three",
+    "--props",
+    missing,
+  ]);
+
+  assert.notEqual(result.status, 0);
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, MISSING_PROPS_ERROR);
+});
+
+test("passes props, fixture actions, and deterministic time to Three.js", () => {
+  const result = runCli([
+    "node",
+    advancedSceneEntry,
+    "three:semantic-focus",
+    "--export",
+    "createConfiguredScene",
+    "--renderer",
+    "three",
+    "--props",
+    advancedProps,
+    "--action",
+    "select",
+    "--action-input",
+    actionInput,
+    "--time",
+    "125",
+    "--width",
+    "320",
+    "--height",
+    "240",
+  ]);
+
+  assert.equal(result.status, 0, result.stderr);
+  const detail = JSON.parse(result.stdout);
+  assert.equal(detail.renderer, "three");
+  assert.deepEqual(detail.fixture.action, {
+    inputPath: actionInput,
+    name: "select",
+  });
+  assert.equal(detail.fixture.timeMs, 125);
+  assert.equal(detail.node.kind, "SemanticTarget");
+  assert.deepEqual(detail.node.focus, [4, 0, 3]);
+  assert.equal(detail.node.bounds.worldBox.min[2], 2);
+  assert.equal(detail.node.bounds.worldBox.max[2], 4);
+  assert.ok(detail.node.bounds.worldBox.min[0] < 3);
+  assert.ok(detail.node.bounds.worldBox.max[0] > 5);
+});
+
+test("exposes stable instance IDs as frameable semantic targets", () => {
+  const result = runCli([
+    "node",
+    advancedSceneEntry,
+    "three:instance-beta",
+    "--export",
+    "createConfiguredScene",
+    "--renderer",
+    "three",
+    "--width",
+    "320",
+    "--height",
+    "240",
+  ]);
+
+  assert.equal(result.status, 0, result.stderr);
+  const detail = JSON.parse(result.stdout);
+  assert.equal(detail.node.kind, "SemanticTarget");
+  assert.equal(detail.node.selection.source, "instances");
+  assert.deepEqual(detail.node.bounds.worldBox.min, [13.5, -0.5, -0.5]);
+  assert.deepEqual(detail.node.bounds.worldBox.max, [14.5, 0.5, 0.5]);
+});
+
+test("preserves the complete source camera when original framing is requested", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-camera-test-"));
+  const before = join(directory, "before.png");
+  const during = join(directory, "during.png");
+
+  try {
+    const base = [
+      "render",
+      advancedSceneEntry,
+      "three:semantic-focus",
+      "--export",
+      "createConfiguredScene",
+      "--renderer",
+      "three",
+      "--props",
+      advancedProps,
+      "--action",
+      "select",
+      "--action-input",
+      actionInput,
+      "--view",
+      "original",
+      "--framing",
+      "source",
+      "--width",
+      "320",
+      "--height",
+      "240",
+    ];
+    const first = runCli([...base, "--time", "0", "--out", before]);
+    const second = runCli([...base, "--time", "125", "--out", during]);
+
+    assert.equal(first.status, 0, first.stderr);
+    assert.equal(second.status, 0, second.stderr);
+    const report = JSON.parse(first.stdout);
+    assert.equal(report.camera.modified, false);
+    assert.deepEqual(report.camera.source.position, [7, -11, 9]);
+    assert.deepEqual(report.camera.resolved.position, [7, -11, 9]);
+    assert.deepEqual(
+      report.camera.resolved.quaternion,
+      report.camera.source.quaternion
+    );
+    assert.notDeepEqual(readFileSync(before), readFileSync(during));
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("Scout recommends source-derived context and bounded detail before higher scale", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-intent-test-"));
+
+  try {
+    const result = runCli([
+      "scout",
+      advancedSceneEntry,
+      "three:semantic-focus",
+      "--export",
+      "createConfiguredScene",
+      "--props",
+      advancedProps,
+      "--width",
+      "320",
+      "--height",
+      "240",
+      "--out",
+      directory,
+    ]);
+
+    assert.equal(result.status, 0, result.stderr);
+    const briefing = JSON.parse(result.stdout);
+    assert.equal(briefing.target.granularity, "semantic");
+    assert.equal(briefing.diagnosis.limitingFactor, "framing");
+    assert.equal(briefing.diagnosis.higherScaleWouldHelp, false);
+    assert.match(
+      briefing.recommendations.context.command,
+      SOURCE_FRAMING_COMMAND
+    );
+    assert.match(
+      briefing.recommendations.sourceDetail.command,
+      SOURCE_REGION_COMMAND
+    );
+    assert.match(
+      briefing.recommendations.detail.command,
+      TARGET_FRAMING_COMMAND
+    );
+    assert.doesNotMatch(
+      briefing.recommendations.detail.command,
+      SCALE_FOUR_COMMAND
+    );
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("captures deterministic transition frames in one scene lifecycle", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-frames-test-"));
+
+  try {
+    const result = runCli([
+      "render",
+      advancedSceneEntry,
+      "three:semantic-focus",
+      "--export",
+      "createConfiguredScene",
+      "--renderer",
+      "three",
+      "--props",
+      advancedProps,
+      "--action",
+      "select",
+      "--action-input",
+      actionInput,
+      "--frames",
+      "before,0,125,settled",
+      "--view",
+      "original",
+      "--framing",
+      "source",
+      "--width",
+      "320",
+      "--height",
+      "240",
+      "--out",
+      directory,
+    ]);
+
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.command, "render-frames");
+    assert.deepEqual(report.lifecycle, {
+      actions: 1,
+      browserLaunches: 1,
+      bundles: 1,
+      frames: 4,
+      sceneInstances: 1,
+    });
+    assert.equal(report.frames.length, 4);
+    for (const frame of report.frames) {
+      assert.ok(existsSync(frame.artifact));
+      assert.ok(statSync(frame.artifact).size > 100);
+    }
+    assert.ok(existsSync(report.artifacts.contactSheet));
+    assert.ok(existsSync(report.artifacts.manifest));
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("doctor reports Chromium and WebGL readiness with actionable execution guidance", () => {
+  const result = runCli(["doctor"]);
+
+  assert.equal(result.status, 0, result.stderr);
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.success, true);
+  assert.equal(report.checks.chromiumFound, true);
+  assert.equal(report.checks.browserLaunched, true);
+  assert.equal(report.checks.webglAvailable, true);
+  assert.match(report.executionGuidance, DIRECT_COMMAND_GUIDANCE);
+  assert.match(report.executionGuidance, LOCAL_RENDER_GUIDANCE);
+});
+
+test("browser launch failure exits non-zero with local-render permission guidance", () => {
+  const result = runCli(["doctor"], {
+    SCENEPROOF_CHROME_PATH: "/bin/false",
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, CHROMIUM_PERMISSION_ERROR);
 });
 
 test("inspect rebuilds source into a deterministic structural scene", () => {

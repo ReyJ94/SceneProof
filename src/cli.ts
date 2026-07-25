@@ -1,10 +1,13 @@
 #!/usr/bin/env bun
 
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { Command } from "commander";
 import { z } from "zod";
 
+import packageMetadata from "../package.json" with { type: "json" };
+import { diagnoseBrowser } from "./browser-runtime.js";
 import {
   persistJsonEvidence,
   referenceJsonEvidence,
@@ -14,21 +17,39 @@ import {
   renderReact,
   renderReactRegion,
 } from "./react-renderer.js";
+import {
+  detectRenderer,
+  probeRenderer,
+  type RendererKind,
+  rendererProbeInputFromEnvironment,
+} from "./renderer-detection.js";
 import type {
   LogicalRegion,
   SceneArtifact,
   ScoutReport,
 } from "./scene-schema.js";
 import {
+  type FixtureProvenance,
   inspectThree,
   renderThree,
+  renderThreeFrames,
   renderThreeRegion,
   scoutThree,
+  type ThreeFraming,
   type ThreeTargetView,
 } from "./three-renderer.js";
 
+const rendererProbeInput = rendererProbeInputFromEnvironment();
+if (rendererProbeInput) {
+  process.stdout.write(await probeRenderer(rendererProbeInput));
+  process.exit(0);
+}
+
 const PositiveInteger = z.coerce.number().int().positive();
 const PositiveScale = z.coerce.number().positive();
+const NonnegativeNumber = z.coerce.number().nonnegative();
+const RendererKindSchema = z.enum(["auto", "react", "three"]);
+const FramingSchema = z.enum(["source", "fit", "fill"]);
 const PropsSchema = z.record(z.string(), z.unknown());
 const RegionTuple = z.tuple([
   z.coerce.number().nonnegative(),
@@ -50,25 +71,46 @@ const VIEW_PRESETS = {
 } as const;
 
 type CommonOptions = {
+  action?: string;
+  actionInput?: string;
   export: string;
   props?: string;
   css?: string[];
   width: string;
   height: string;
+  renderer: string;
+  time?: string;
 };
 
 type RenderOptions = CommonOptions & {
+  frames?: string;
+  framing?: string;
+  margin: string;
   scale: string;
   out?: string;
 };
 
-function sourceOptions(command: Command): Command {
+function fixtureOptions(command: Command, defaultExport: string): Command {
   return command
-    .option("--export <name>", "named module export", "default")
-    .option("--props <file>", "JSON object passed as React props")
-    .option("--css <files...>", "source CSS files to compile and load")
+    .option("--export <name>", "named module export", defaultExport)
+    .option(
+      "--renderer <auto|react|three>",
+      "renderer selection; auto probes the selected export contract",
+      "auto"
+    )
+    .option("--props <file>", "JSON fixture state passed to React or Three.js")
+    .option("--action <name>", "fixture-owned Three.js action")
+    .option("--action-input <file>", "JSON object passed to the fixture action")
+    .option("--time <milliseconds>", "deterministic fixture seek time")
     .option("--width <pixels>", "logical viewport width", "1280")
     .option("--height <pixels>", "logical viewport height", "720");
+}
+
+function sourceOptions(command: Command): Command {
+  return fixtureOptions(command, "default").option(
+    "--css <files...>",
+    "source CSS files to compile and load"
+  );
 }
 
 function renderOptions(command: Command): Command {
@@ -78,14 +120,20 @@ function renderOptions(command: Command): Command {
       "source pixel density; use --zoom to move a Three.js camera",
       "1"
     )
+    .option(
+      "--framing <source|fit|fill>",
+      "Three.js framing: literal source camera, contained target, or close target"
+    )
+    .option("--margin <fraction>", "target framing margin", "0.12")
+    .option(
+      "--frames <before,ms...,settled>",
+      "capture a deterministic Three.js sequence in one scene lifecycle"
+    )
     .option("--out <path>", "artifact output path");
 }
 
 function scoutOptions(command: Command): Command {
-  return command
-    .option("--export <name>", "named Three.js scene factory", "createScene")
-    .option("--width <pixels>", "discovery frame width", "320")
-    .option("--height <pixels>", "discovery frame height", "240")
+  return fixtureOptions(command, "createScene")
     .option("--focus-node <node-id>", "center cameras on another scene node")
     .option("--look-at <x,y,z>", "center cameras on a world-space point")
     .option("--no-isolate", "include unrelated objects in discovery views")
@@ -97,12 +145,33 @@ function scoutOptions(command: Command): Command {
     );
 }
 
-async function loadProps(path: string | undefined) {
+type LoadedJson = {
+  reference: { digest: string; path: string } | null;
+  value: Record<string, unknown>;
+};
+
+async function loadJsonInput(
+  path: string | undefined,
+  label: string
+): Promise<LoadedJson> {
   if (!path) {
-    return {};
+    return { reference: null, value: {} };
   }
-  const parsed: unknown = JSON.parse(await readFile(resolve(path), "utf8"));
-  return PropsSchema.parse(parsed);
+  const absolute = resolve(path);
+  let source: string;
+  try {
+    source = await readFile(absolute, "utf8");
+  } catch (error) {
+    throw new Error(`${label} file not found: ${absolute}`, { cause: error });
+  }
+  const parsed: unknown = JSON.parse(source);
+  return {
+    reference: {
+      digest: `sha256:${createHash("sha256").update(source).digest("hex")}`,
+      path: absolute,
+    },
+    value: PropsSchema.parse(parsed),
+  };
 }
 
 function output(value: unknown): void {
@@ -123,9 +192,11 @@ async function inspectBriefing(scene: SceneArtifact) {
       full: await persistJsonEvidence("inspect", scene),
     },
     export: scene.export,
+    fixture: scene.fixture,
     nodeCount: scene.nodes.length,
     presentation: "brief",
     relationshipCount: scene.relationships.length,
+    renderer: scene.renderer,
     rootIds: scene.rootIds,
     roots: scene.rootIds.map((id) => {
       const node = nodes.get(id);
@@ -166,12 +237,14 @@ async function scoutBriefing(report: ScoutReport) {
       total: report.candidates.length,
     },
     command: "scout",
+    diagnosis: report.diagnosis,
     evidence: {
       full: await referenceJsonEvidence(report.artifacts.report),
     },
     focus: report.focus,
     lifecycle: report.lifecycle,
     presentation: "brief",
+    recommendations: report.recommendations,
     recommended: report.recommended,
     success: report.success,
     target: report.target,
@@ -184,8 +257,68 @@ async function scoutBriefing(report: ScoutReport) {
   };
 }
 
-function isThreeExport(exportName: string): boolean {
-  return exportName === "createScene";
+type PreparedSource = {
+  absoluteEntry: string;
+  actionInput: Record<string, unknown>;
+  fixture: FixtureProvenance;
+  height: number;
+  props: Record<string, unknown>;
+  renderer: RendererKind;
+  timeMs?: number;
+  width: number;
+};
+
+async function prepareSource(
+  entry: string,
+  raw: CommonOptions
+): Promise<PreparedSource> {
+  const height = PositiveInteger.parse(raw.height);
+  const width = PositiveInteger.parse(raw.width);
+  const absoluteEntry = resolve(entry);
+  const props = await loadJsonInput(raw.props, "Props");
+  const actionInput = await loadJsonInput(raw.actionInput, "Action input");
+  if (raw.actionInput && !raw.action) {
+    throw new Error("--action-input requires --action.");
+  }
+  const requestedRenderer = RendererKindSchema.parse(raw.renderer);
+  const renderer =
+    requestedRenderer === "auto"
+      ? await detectRenderer({
+          entry: absoluteEntry,
+          exportName: raw.export,
+          height,
+          props: props.value,
+          width,
+        })
+      : requestedRenderer;
+  const timeMs =
+    raw.time === undefined ? undefined : NonnegativeNumber.parse(raw.time);
+  if (renderer === "react" && (raw.action || raw.actionInput || raw.time)) {
+    throw new Error(
+      "--action, --action-input, and --time require a Three.js fixture."
+    );
+  }
+  return {
+    absoluteEntry,
+    actionInput: actionInput.value,
+    fixture: {
+      action: raw.action
+        ? {
+            ...(actionInput.reference
+              ? { inputPath: actionInput.reference.path }
+              : {}),
+            name: raw.action,
+          }
+        : null,
+      props: props.reference,
+      timeMs: timeMs ?? null,
+    },
+    height,
+    props: props.value,
+    renderer,
+    ...(timeMs === undefined ? {} : { timeMs }),
+    width,
+  };
 }
 
 function parseRegion(
@@ -227,25 +360,38 @@ async function inspectEntry(
   entry: string,
   raw: CommonOptions
 ): Promise<SceneArtifact> {
-  const height = PositiveInteger.parse(raw.height);
-  const width = PositiveInteger.parse(raw.width);
-  const absoluteEntry = resolve(entry);
-  if (isThreeExport(raw.export)) {
-    return inspectThree({
-      entry: absoluteEntry,
+  const prepared = await prepareSource(entry, raw);
+  if (prepared.renderer === "three") {
+    const scene = await inspectThree({
+      ...(raw.action === undefined ? {} : { action: raw.action }),
+      actionInput: prepared.actionInput,
+      entry: prepared.absoluteEntry,
       exportName: raw.export,
-      height,
-      width,
+      fixture: prepared.fixture,
+      height: prepared.height,
+      props: prepared.props,
+      ...(prepared.timeMs === undefined ? {} : { timeMs: prepared.timeMs }),
+      width: prepared.width,
     });
+    return {
+      ...scene,
+      fixture: prepared.fixture,
+      renderer: "three",
+    };
   }
-  return inspectReact({
+  const scene = await inspectReact({
     css: (raw.css ?? []).map((path) => resolve(path)),
-    entry: absoluteEntry,
+    entry: prepared.absoluteEntry,
     exportName: raw.export,
-    height,
-    props: await loadProps(raw.props),
-    width,
+    height: prepared.height,
+    props: prepared.props,
+    width: prepared.width,
   });
+  return {
+    ...scene,
+    fixture: prepared.fixture,
+    renderer: "react",
+  };
 }
 
 function compactTree(scene: SceneArtifact) {
@@ -318,7 +464,9 @@ function compactTree(scene: SceneArtifact) {
   return {
     entry: scene.entry,
     export: scene.export,
+    fixture: scene.fixture,
     ...(prunedNodes > 0 ? { prunedHiddenNodes: prunedNodes } : {}),
+    renderer: scene.renderer,
     roots,
     viewport: scene.viewport,
     warnings: scene.warnings,
@@ -352,7 +500,9 @@ function nodeDetail(scene: SceneArtifact, nodeId: string) {
     children: node.children.map(summary),
     entry: scene.entry,
     export: scene.export,
+    fixture: scene.fixture,
     node,
+    renderer: scene.renderer,
     ...(parentId ? { parent: summary(parentId) } : {}),
   };
 }
@@ -360,7 +510,7 @@ function nodeDetail(scene: SceneArtifact, nodeId: string) {
 const program = new Command()
   .name("sceneproof")
   .description("Source-grounded visual perception for coding agents")
-  .version("0.1.0");
+  .version(packageMetadata.version);
 
 sourceOptions(
   program
@@ -423,52 +573,89 @@ renderOptions(
       zoom: string;
       lookAt?: string;
     }
+    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This command boundary validates mutually exclusive React and Three.js render surfaces before dispatch.
   ) => {
-    const width = PositiveInteger.parse(raw.width);
-    const height = PositiveInteger.parse(raw.height);
+    const prepared = await prepareSource(entry, raw);
     const scale = PositiveScale.parse(raw.scale);
-    const absoluteEntry = resolve(entry);
-    const out = resolve(raw.out ?? "sceneproof-render.png");
-    if (isThreeExport(raw.export)) {
+    const framing = FramingSchema.parse(
+      raw.framing ?? (raw.view === "original" ? "source" : "fit")
+    ) as ThreeFraming;
+    const margin = NonnegativeNumber.parse(raw.margin);
+    const out = resolve(
+      raw.out ?? (raw.frames ? "sceneproof-frames" : "sceneproof-render.png")
+    );
+    if (prepared.renderer === "three") {
       const view = parseThreeView(raw.view);
+      if (
+        framing === "source" &&
+        (view !== undefined || raw.zoom !== "1" || raw.lookAt)
+      ) {
+        throw new Error(
+          "Source framing preserves the literal camera and cannot be combined with a generated view, --zoom, or --look-at. Use --framing fit or --framing fill."
+        );
+      }
+      const common = {
+        ...(raw.action === undefined ? {} : { action: raw.action }),
+        actionInput: prepared.actionInput,
+        entry: prepared.absoluteEntry,
+        exportName: raw.export,
+        fixture: prepared.fixture,
+        framing,
+        height: prepared.height,
+        margin,
+        nodeId,
+        props: prepared.props,
+        scale,
+        width: prepared.width,
+        ...(prepared.timeMs === undefined ? {} : { timeMs: prepared.timeMs }),
+        ...(raw.lookAt === undefined
+          ? {}
+          : { focus: parseVector3(raw.lookAt) }),
+        ...(raw.isolate === undefined ? {} : { isolate: raw.isolate }),
+        ...(raw.background === undefined ? {} : { background: raw.background }),
+        ...(view === undefined ? {} : { view }),
+        zoom: PositiveScale.parse(raw.zoom),
+      };
+      if (raw.frames) {
+        output(
+          await renderThreeFrames({
+            ...common,
+            frames: raw.frames,
+            out,
+          })
+        );
+        return;
+      }
       output(
         await renderThree({
-          entry: absoluteEntry,
-          exportName: raw.export,
-          height,
-          nodeId,
+          ...common,
           out,
-          scale,
-          width,
-          zoom: PositiveScale.parse(raw.zoom),
-          ...(raw.lookAt === undefined
-            ? {}
-            : { focus: parseVector3(raw.lookAt) }),
-          ...(raw.isolate === undefined ? {} : { isolate: raw.isolate }),
-          ...(raw.background === undefined
-            ? {}
-            : { background: raw.background }),
-          ...(view === undefined ? {} : { view }),
         })
       );
       return;
     }
-    if (raw.view !== "original" || raw.zoom !== "1" || raw.lookAt) {
+    if (
+      raw.view !== "original" ||
+      raw.zoom !== "1" ||
+      raw.lookAt ||
+      raw.frames ||
+      raw.framing
+    ) {
       throw new Error(
-        "--view, --zoom, and --look-at are Three.js render options."
+        "--view, --zoom, --look-at, --framing, and --frames are Three.js render options."
       );
     }
     output(
       await renderReact({
         css: (raw.css ?? []).map((path) => resolve(path)),
-        entry: absoluteEntry,
+        entry: prepared.absoluteEntry,
         exportName: raw.export,
-        height,
+        height: prepared.height,
         nodeId,
         out,
-        props: await loadProps(raw.props),
+        props: prepared.props,
         scale,
-        width,
+        width: prepared.width,
       })
     );
   }
@@ -489,22 +676,28 @@ renderOptions(
     entry: string,
     raw: RenderOptions & { region: string; background?: string }
   ) => {
-    const width = PositiveInteger.parse(raw.width);
-    const height = PositiveInteger.parse(raw.height);
+    const prepared = await prepareSource(entry, raw);
     const scale = PositiveScale.parse(raw.scale);
-    const region = parseRegion(raw.region, { height, width });
-    const absoluteEntry = resolve(entry);
+    const region = parseRegion(raw.region, {
+      height: prepared.height,
+      width: prepared.width,
+    });
     const out = resolve(raw.out ?? "sceneproof-region.png");
-    if (isThreeExport(raw.export)) {
+    if (prepared.renderer === "three") {
       output(
         await renderThreeRegion({
-          entry: absoluteEntry,
+          ...(raw.action === undefined ? {} : { action: raw.action }),
+          actionInput: prepared.actionInput,
+          entry: prepared.absoluteEntry,
           exportName: raw.export,
-          height,
+          fixture: prepared.fixture,
+          height: prepared.height,
           out,
+          props: prepared.props,
           region,
           scale,
-          width,
+          ...(prepared.timeMs === undefined ? {} : { timeMs: prepared.timeMs }),
+          width: prepared.width,
           ...(raw.background === undefined
             ? {}
             : { background: raw.background }),
@@ -515,14 +708,14 @@ renderOptions(
     output(
       await renderReactRegion({
         css: (raw.css ?? []).map((path) => resolve(path)),
-        entry: absoluteEntry,
+        entry: prepared.absoluteEntry,
         exportName: raw.export,
-        height,
+        height: prepared.height,
         out,
-        props: await loadProps(raw.props),
+        props: prepared.props,
         region,
         scale,
-        width,
+        width: prepared.width,
       })
     );
   }
@@ -542,12 +735,17 @@ scoutOptions(
     nodeId: string,
     raw: {
       background?: string;
+      action?: string;
+      actionInput?: string;
       export: string;
       focusNode?: string;
       height: string;
       isolate: boolean;
       lookAt?: string;
       out: string;
+      props?: string;
+      renderer: string;
+      time?: string;
       width: string;
     }
   ) => {
@@ -556,19 +754,25 @@ scoutOptions(
         "--focus-node and --look-at are mutually exclusive focus sources."
       );
     }
-    if (!isThreeExport(raw.export)) {
-      throw new Error("Scout requires a Three.js createScene export.");
+    const prepared = await prepareSource(entry, raw);
+    if (prepared.renderer !== "three") {
+      throw new Error("Scout requires a Three.js fixture export.");
     }
     output(
       await scoutBriefing(
         await scoutThree({
-          entry: resolve(entry),
+          ...(raw.action === undefined ? {} : { action: raw.action }),
+          actionInput: prepared.actionInput,
+          entry: prepared.absoluteEntry,
           exportName: raw.export,
-          height: PositiveInteger.parse(raw.height),
+          fixture: prepared.fixture,
+          height: prepared.height,
           isolate: raw.isolate,
           nodeId,
           out: resolve(raw.out),
-          width: PositiveInteger.parse(raw.width),
+          props: prepared.props,
+          ...(prepared.timeMs === undefined ? {} : { timeMs: prepared.timeMs }),
+          width: prepared.width,
           ...(raw.background === undefined
             ? {}
             : { background: raw.background }),
@@ -583,6 +787,17 @@ scoutOptions(
     );
   }
 );
+
+program
+  .command("doctor")
+  .description("diagnose Chromium, WebGL, and local-render execution readiness")
+  .action(async () => {
+    const report = await diagnoseBrowser();
+    output(report);
+    if (!report.success) {
+      process.exitCode = 1;
+    }
+  });
 
 program.parseAsync().catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);

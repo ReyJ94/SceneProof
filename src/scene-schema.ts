@@ -31,6 +31,7 @@ export const SceneArtifactSchema = z.object({
   assets: z.array(z.unknown()),
   entry: z.string(),
   export: z.string(),
+  fixture: z.unknown().optional(),
   nodes: z.array(SceneNodeSchema),
   relationships: z.array(
     z.object({
@@ -39,6 +40,7 @@ export const SceneArtifactSchema = z.object({
       to: z.string(),
     })
   ),
+  renderer: z.enum(["react", "three"]).optional(),
   root: z.string().optional(),
   rootIds: z.array(z.string()),
   version: z.literal(1),
@@ -77,7 +79,11 @@ export type RenderReport = {
   camera?: {
     azimuth?: number;
     elevation?: number;
+    framing: "fill" | "fit" | "source";
+    modified: boolean;
     position: [number, number, number];
+    resolved: CameraSnapshot;
+    source: CameraSnapshot;
     target: [number, number, number];
     view: string;
     zoom: number;
@@ -87,6 +93,20 @@ export type RenderReport = {
     render: number;
     total: number;
   };
+  fixture?: unknown;
+  renderer?: "react" | "three";
+};
+
+export type CameraSnapshot = {
+  aspect?: number;
+  far: number;
+  fov?: number;
+  near: number;
+  position: [number, number, number];
+  quaternion: [number, number, number, number];
+  type: string;
+  up: [number, number, number];
+  zoom?: number;
 };
 
 export type LogicalRegion = {
@@ -121,6 +141,8 @@ export type RegionRenderReport = {
     render: number;
     total: number;
   };
+  fixture?: unknown;
+  renderer?: "react" | "three";
 };
 
 export type ScoutCandidateMetrics = {
@@ -138,6 +160,7 @@ export type ScoutCandidateMetrics = {
   };
   targetCoverage: number;
   visiblePixelFraction: number;
+  screenBounds: LogicalRegion;
 };
 
 export type ScoutCandidate = {
@@ -179,8 +202,20 @@ export type ScoutReport = {
     detailCommand: string | null;
     reason: string[];
   };
+  diagnosis: {
+    higherScaleWouldHelp: boolean;
+    limitingFactor: "framing" | "raster-resolution";
+    sourceTargetPixelFraction: number;
+  };
+  recommendations: {
+    context: ScoutRecommendation;
+    detail: ScoutRecommendation;
+    shape: ScoutRecommendation;
+    sourceDetail: ScoutRecommendation;
+  };
   success: boolean;
   target: {
+    granularity: "draw-owner" | "object" | "semantic";
     id: string;
     kind: string;
     vertexCount?: number;
@@ -191,4 +226,33 @@ export type ScoutReport = {
     total: number;
   };
   warnings: string[];
+};
+
+export type ScoutRecommendation = {
+  candidateId: string | null;
+  command: string | null;
+  reason: string[];
+  strategy: "source-camera" | "source-region" | "target-camera" | "unavailable";
+};
+
+export type FrameRenderReport = {
+  artifacts: {
+    contactSheet: string;
+    directory: string;
+    manifest: string;
+  };
+  command: "render-frames";
+  frames: Array<{
+    artifact: string;
+    label: string;
+    timeMs: number | null;
+  }>;
+  lifecycle: {
+    actions: 0 | 1;
+    browserLaunches: 1;
+    bundles: 1;
+    frames: number;
+    sceneInstances: 1;
+  };
+  success: boolean;
 };

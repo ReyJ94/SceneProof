@@ -3,6 +3,7 @@ import { dirname, join, resolve } from "node:path";
 
 import { launchBrowser, mountBundle } from "./browser-runtime.js";
 import {
+  type FrameRenderReport,
   type LogicalRegion,
   type RegionRenderReport,
   type RenderReport,
@@ -13,7 +14,17 @@ import {
 } from "./scene-schema.js";
 import { bundleBrowserDriver } from "./source-bundle.js";
 
+export type FixtureProvenance = {
+  action: { inputPath?: string; name: string } | null;
+  props: { digest: string; path: string } | null;
+  timeMs: number | null;
+};
+
+export type ThreeFraming = "fill" | "fit" | "source";
+
 type ThreeOptions = {
+  action?: string;
+  actionInput?: Record<string, unknown>;
   entry: string;
   exportName: string;
   width: number;
@@ -26,6 +37,11 @@ type ThreeOptions = {
   view?: ThreeTargetView;
   zoom?: number;
   focus?: [number, number, number];
+  fixture?: FixtureProvenance;
+  framing?: ThreeFraming;
+  margin?: number;
+  props: Record<string, unknown>;
+  timeMs?: number;
 };
 
 export type ThreeTargetView = {
@@ -35,6 +51,8 @@ export type ThreeTargetView = {
 };
 
 export type ThreeScoutOptions = {
+  action?: string;
+  actionInput?: Record<string, unknown>;
   background?: string;
   entry: string;
   exportName: string;
@@ -45,6 +63,9 @@ export type ThreeScoutOptions = {
   nodeId: string;
   out: string;
   width: number;
+  fixture?: FixtureProvenance;
+  props: Record<string, unknown>;
+  timeMs?: number;
 };
 
 type ScoutCandidateSpec = {
@@ -92,6 +113,7 @@ function detailCommand(input: {
   isolate: boolean;
   nodeId: string;
   width: number;
+  fixture?: FixtureProvenance;
 }): string {
   const focus = input.focus.map(compactNumber).join(",");
   let viewArgument = `--view ${input.candidate.view}`;
@@ -106,11 +128,98 @@ function detailCommand(input: {
     `--width ${input.width}`,
     `--height ${input.height}`,
     viewArgument,
+    "--framing fill",
     `--zoom ${compactNumber(input.candidate.zoom)}`,
     `--look-at ${focus}`,
-    "--scale 4",
+    "--scale 1",
+    ...(input.fixture?.props
+      ? ["--props", shellQuote(input.fixture.props.path)]
+      : []),
+    ...(input.fixture?.action
+      ? ["--action", shellQuote(input.fixture.action.name)]
+      : []),
+    ...(input.fixture?.action?.inputPath
+      ? ["--action-input", shellQuote(input.fixture.action.inputPath)]
+      : []),
+    ...(input.fixture?.timeMs === null || input.fixture?.timeMs === undefined
+      ? []
+      : ["--time", compactNumber(input.fixture.timeMs)]),
     ...(input.isolate ? ["--isolate"] : []),
     "--out artifacts/sceneproof-detail.png",
+  ].join(" ");
+}
+
+function sourceCameraCommand(input: {
+  entry: string;
+  exportName: string;
+  fixture?: FixtureProvenance;
+  height: number;
+  nodeId: string;
+  width: number;
+}): string {
+  return [
+    "sceneproof render",
+    shellQuote(input.entry),
+    shellQuote(input.nodeId),
+    `--export ${shellQuote(input.exportName)}`,
+    "--renderer three",
+    `--width ${input.width}`,
+    `--height ${input.height}`,
+    "--view original",
+    "--framing source",
+    "--scale 1",
+    ...(input.fixture?.props
+      ? ["--props", shellQuote(input.fixture.props.path)]
+      : []),
+    ...(input.fixture?.action
+      ? ["--action", shellQuote(input.fixture.action.name)]
+      : []),
+    ...(input.fixture?.action?.inputPath
+      ? ["--action-input", shellQuote(input.fixture.action.inputPath)]
+      : []),
+    ...(input.fixture?.timeMs === null || input.fixture?.timeMs === undefined
+      ? []
+      : ["--time", compactNumber(input.fixture.timeMs)]),
+    "--out artifacts/sceneproof-context.png",
+  ].join(" ");
+}
+
+function sourceRegionCommand(input: {
+  entry: string;
+  exportName: string;
+  fixture?: FixtureProvenance;
+  height: number;
+  region: LogicalRegion;
+  width: number;
+}): string {
+  const region = [
+    input.region.x,
+    input.region.y,
+    input.region.width,
+    input.region.height,
+  ].join(",");
+  return [
+    "sceneproof render-region",
+    shellQuote(input.entry),
+    `--export ${shellQuote(input.exportName)}`,
+    "--renderer three",
+    `--width ${input.width}`,
+    `--height ${input.height}`,
+    `--region ${region}`,
+    "--scale 1",
+    ...(input.fixture?.props
+      ? ["--props", shellQuote(input.fixture.props.path)]
+      : []),
+    ...(input.fixture?.action
+      ? ["--action", shellQuote(input.fixture.action.name)]
+      : []),
+    ...(input.fixture?.action?.inputPath
+      ? ["--action-input", shellQuote(input.fixture.action.inputPath)]
+      : []),
+    ...(input.fixture?.timeMs === null || input.fixture?.timeMs === undefined
+      ? []
+      : ["--time", compactNumber(input.fixture.timeMs)]),
+    "--out artifacts/sceneproof-source-detail.png",
   ].join(" ");
 }
 
@@ -136,11 +245,33 @@ function driverSource(input: ThreeOptions): string {
           height: ${input.height},
           pixelRatio: ${input.scale ?? 1},
           assets: {},
-          time: 0,
+          props: ${JSON.stringify(input.props)},
         });
         if (!result?.scene?.isScene || !result?.camera?.isCamera) {
           throw new Error("Scene factory must return { scene, camera }.");
         }
+        await result.ready;
+        const actionName = ${JSON.stringify(input.action ?? null)};
+        if (actionName !== null) {
+          const action = result.actions?.[actionName];
+          if (typeof action !== "function") {
+            throw new Error(
+              "Scene fixture action " + actionName + " was not found."
+            );
+          }
+          await action(${JSON.stringify(input.actionInput ?? {})});
+        }
+        const requestedTime = ${JSON.stringify(input.timeMs ?? null)};
+        if (requestedTime !== null) {
+          if (typeof result.seek !== "function") {
+            throw new Error(
+              "Scene fixture does not expose seek(timeMs), required by --time."
+            );
+          }
+          await result.seek(requestedTime);
+        }
+        result.scene.updateMatrixWorld(true);
+        result.camera.updateMatrixWorld(true);
         window.__UISCENE_THREE__ = { THREE, result };
         window.__UISCENE_READY__ = true;
       } catch (error) {
@@ -180,6 +311,7 @@ async function extractThreeScene(
   options: ThreeOptions
 ): Promise<SceneArtifact> {
   const artifact = await page.evaluate(
+    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Playwright must serialize the full Three.js inspection transaction into one browser callback.
     ({ entry, exportName, width, height }) => {
       const browserRuntime = Reflect.get(window, "__UISCENE_THREE__") as
         | {
@@ -187,6 +319,19 @@ async function extractThreeScene(
             result: {
               camera: import("three").Camera;
               scene: import("three").Scene;
+              targets?: Array<{
+                bounds?: import("three").Box3 | (() => import("three").Box3);
+                focus?:
+                  | import("three").Vector3
+                  | (() => import("three").Vector3);
+                id: string;
+                isolate?: () => void;
+                label?: string;
+                members?: Array<{
+                  instanceId?: number;
+                  object: import("three").Object3D;
+                }>;
+              }>;
             };
           }
         | undefined;
@@ -436,7 +581,9 @@ async function extractThreeScene(
         }
         return node;
       };
-      const nodes = objects.map(serializeObject);
+      const nodes: Array<
+        Record<string, unknown> & { children: string[]; id: string }
+      > = objects.map(serializeObject);
       const warnings = nodes.flatMap((node) => {
         const geometry = Reflect.get(node, "geometry") as
           | {
@@ -461,6 +608,154 @@ async function extractThreeScene(
       const rootId = ids.get(result.scene);
       if (!rootId) {
         throw new Error("Three.js scene identity is missing.");
+      }
+      const targetDescriptors = new Map<
+        string,
+        {
+          bounds?: import("three").Box3 | (() => import("three").Box3);
+          focus?: import("three").Vector3 | (() => import("three").Vector3);
+          id: string;
+          isolate?: () => void;
+          label?: string;
+          members: Array<{
+            instanceId?: number;
+            object: import("three").Object3D;
+          }>;
+          source: "fixture" | "instances";
+        }
+      >();
+      for (const descriptor of result.targets ?? []) {
+        const semantic = descriptor.id.startsWith("three:")
+          ? descriptor.id.slice("three:".length)
+          : descriptor.id;
+        const id = `three:${clean(semantic)}`;
+        targetDescriptors.set(id, {
+          ...descriptor,
+          id,
+          members: [...(descriptor.members ?? [])],
+          source: "fixture",
+        });
+      }
+      for (const object of objects) {
+        const instanceIds = object.userData.sceneproofInstanceIds;
+        if (
+          Reflect.get(object, "isInstancedMesh") !== true ||
+          !Array.isArray(instanceIds)
+        ) {
+          continue;
+        }
+        const count = Math.min(
+          Number(Reflect.get(object, "count") ?? 0),
+          instanceIds.length
+        );
+        for (let instanceId = 0; instanceId < count; instanceId += 1) {
+          const rawId = instanceIds[instanceId];
+          if (typeof rawId !== "string" || clean(rawId).length === 0) {
+            continue;
+          }
+          const id = `three:${clean(rawId)}`;
+          const existing = targetDescriptors.get(id);
+          if (existing) {
+            existing.members.push({ instanceId, object });
+          } else {
+            targetDescriptors.set(id, {
+              id,
+              members: [{ instanceId, object }],
+              source: "instances",
+            });
+          }
+        }
+      }
+      const memberBox = (
+        member: {
+          instanceId?: number;
+          object: import("three").Object3D;
+        },
+        target: import("three").Box3
+      ): void => {
+        if (
+          typeof member.instanceId === "number" &&
+          Reflect.get(member.object, "isInstancedMesh") === true
+        ) {
+          const mesh = member.object as import("three").InstancedMesh;
+          if (!mesh.geometry.boundingBox) {
+            mesh.geometry.computeBoundingBox();
+          }
+          if (!mesh.geometry.boundingBox) {
+            return;
+          }
+          const matrix = new THREE.Matrix4();
+          mesh.getMatrixAt(member.instanceId, matrix);
+          const world = matrix.premultiply(mesh.matrixWorld);
+          target.union(mesh.geometry.boundingBox.clone().applyMatrix4(world));
+          return;
+        }
+        target.union(new THREE.Box3().setFromObject(member.object));
+      };
+      for (const descriptor of targetDescriptors.values()) {
+        const rawBounds =
+          typeof descriptor.bounds === "function"
+            ? descriptor.bounds()
+            : descriptor.bounds;
+        const box = rawBounds?.isBox3 ? rawBounds.clone() : new THREE.Box3();
+        if (!rawBounds?.isBox3) {
+          for (const member of descriptor.members) {
+            memberBox(member, box);
+          }
+        }
+        const size = box.getSize(new THREE.Vector3());
+        if (
+          !(
+            finiteVector(box.min) &&
+            finiteVector(box.max) &&
+            finiteVector(size)
+          ) ||
+          Math.max(size.x, size.y, size.z) <= 0
+        ) {
+          warnings.push(
+            `${descriptor.id} semantic target has empty or invalid bounds.`
+          );
+          continue;
+        }
+        const rawFocus =
+          typeof descriptor.focus === "function"
+            ? descriptor.focus()
+            : descriptor.focus;
+        const focus = rawFocus?.isVector3
+          ? rawFocus
+          : box.getCenter(new THREE.Vector3());
+        let isolation = "instances";
+        if (typeof descriptor.isolate === "function") {
+          isolation = "fixture";
+        } else if (
+          descriptor.members.every((member) => member.instanceId === undefined)
+        ) {
+          isolation = "objects";
+        }
+        nodes.push({
+          bounds: {
+            worldBox: {
+              max: vector(box.max),
+              min: vector(box.min),
+            },
+          },
+          children: [],
+          focus: vector(focus),
+          id: descriptor.id,
+          kind: "SemanticTarget",
+          name: descriptor.label,
+          parent: rootId,
+          selection: {
+            boundsAggregateMultipleLogicalItems: false,
+            granularity: "semantic",
+            isolation,
+            memberCount: descriptor.members.length,
+            source: descriptor.source,
+          },
+          source: { export: exportName, file: entry },
+        });
+        const root = nodes.find((node) => node.id === rootId);
+        root?.children.push(descriptor.id);
       }
       return {
         assets: [],
@@ -522,7 +817,21 @@ export async function renderThree(
       "entry" | "exportName" | "width" | "height" | "scale" | "out" | "nodeId"
     >
   > &
-    Pick<ThreeOptions, "isolate" | "background" | "view" | "zoom" | "focus">
+    Pick<
+      ThreeOptions,
+      | "action"
+      | "actionInput"
+      | "background"
+      | "fixture"
+      | "focus"
+      | "framing"
+      | "isolate"
+      | "margin"
+      | "props"
+      | "timeMs"
+      | "view"
+      | "zoom"
+    >
 ): Promise<RenderReport> {
   const totalStartedAt = performance.now();
   const runtime = await prepareThreePage(options);
@@ -546,6 +855,9 @@ export async function renderThree(
         view,
         zoom,
         focus,
+        framing,
+        margin,
+        // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Playwright must serialize target resolution, framing, and rendering into one browser callback.
       }) => {
         const renderStartedAt = performance.now();
         const browserRuntime = Reflect.get(window, "__UISCENE_THREE__") as {
@@ -555,6 +867,16 @@ export async function renderThree(
             dispose?: () => void | Promise<void>;
             renderer?: import("three").WebGLRenderer;
             scene: import("three").Scene;
+            targets?: Array<{
+              bounds?: import("three").Box3 | (() => import("three").Box3);
+              focus?: import("three").Vector3 | (() => import("three").Vector3);
+              id: string;
+              isolate?: () => void;
+              members?: Array<{
+                instanceId?: number;
+                object: import("three").Object3D;
+              }>;
+            }>;
           };
         };
         const { THREE, result } = browserRuntime;
@@ -565,12 +887,88 @@ export async function renderThree(
           }
         });
         const selectedTarget = target as import("three").Object3D | null;
-        if (!selectedTarget) {
+        const clean = (value: string): string =>
+          value
+            .normalize("NFKD")
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, "-")
+            .replace(/^-|-$/g, "")
+            .slice(0, 80);
+        const descriptor = result.targets?.find((candidate) => {
+          const id = candidate.id.startsWith("three:")
+            ? candidate.id.slice("three:".length)
+            : candidate.id;
+          return `three:${clean(id)}` === nodeId;
+        });
+        const implicitMembers: Array<{
+          instanceId: number;
+          object: import("three").Object3D;
+        }> = [];
+        result.scene.traverse((object) => {
+          const instanceIds = object.userData.sceneproofInstanceIds;
+          if (
+            Reflect.get(object, "isInstancedMesh") !== true ||
+            !Array.isArray(instanceIds)
+          ) {
+            return;
+          }
+          const count = Math.min(
+            Number(Reflect.get(object, "count") ?? 0),
+            instanceIds.length
+          );
+          for (let instanceId = 0; instanceId < count; instanceId += 1) {
+            const rawId = instanceIds[instanceId];
+            if (
+              typeof rawId === "string" &&
+              `three:${clean(rawId)}` === nodeId
+            ) {
+              implicitMembers.push({ instanceId, object });
+            }
+          }
+        });
+        const semanticMembers = descriptor?.members ?? implicitMembers;
+        if (!(selectedTarget || descriptor || semanticMembers.length > 0)) {
           throw new Error(`Target node not found: ${nodeId}`);
         }
 
         result.scene.updateMatrixWorld(true);
-        const box = new THREE.Box3().setFromObject(selectedTarget);
+        // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Semantic bounds support explicit boxes, objects, and individual InstancedMesh members inside the serialized page transaction.
+        const resolveSemanticBox = (): import("three").Box3 => {
+          const raw =
+            typeof descriptor?.bounds === "function"
+              ? descriptor.bounds()
+              : descriptor?.bounds;
+          if (raw?.isBox3) {
+            return raw.clone();
+          }
+          const resolved = new THREE.Box3();
+          for (const member of semanticMembers) {
+            if (
+              typeof member.instanceId === "number" &&
+              Reflect.get(member.object, "isInstancedMesh") === true
+            ) {
+              const mesh = member.object as import("three").InstancedMesh;
+              if (!mesh.geometry.boundingBox) {
+                mesh.geometry.computeBoundingBox();
+              }
+              if (mesh.geometry.boundingBox) {
+                const matrix = new THREE.Matrix4();
+                mesh.getMatrixAt(member.instanceId, matrix);
+                resolved.union(
+                  mesh.geometry.boundingBox
+                    .clone()
+                    .applyMatrix4(matrix.premultiply(mesh.matrixWorld))
+                );
+              }
+            } else {
+              resolved.union(new THREE.Box3().setFromObject(member.object));
+            }
+          }
+          return resolved;
+        };
+        const box = selectedTarget
+          ? new THREE.Box3().setFromObject(selectedTarget)
+          : resolveSemanticBox();
         const size = box.getSize(new THREE.Vector3());
         const boundsValid =
           [size.x, size.y, size.z].every(Number.isFinite) &&
@@ -579,23 +977,23 @@ export async function renderThree(
           throw new Error(`Target node has empty bounds: ${nodeId}`);
         }
 
+        const contains = (
+          ancestor: import("three").Object3D,
+          object: import("three").Object3D
+        ): boolean => {
+          let current: import("three").Object3D | null = object;
+          while (current) {
+            if (current === ancestor) {
+              return true;
+            }
+            current = current.parent;
+          }
+          return false;
+        };
         const isolateTarget = (
           sceneRoot: import("three").Scene,
           isolatedTarget: import("three").Object3D
         ): void => {
-          const contains = (
-            ancestor: import("three").Object3D,
-            object: import("three").Object3D
-          ): boolean => {
-            let current: import("three").Object3D | null = object;
-            while (current) {
-              if (current === ancestor) {
-                return true;
-              }
-              current = current.parent;
-            }
-            return false;
-          };
           sceneRoot.traverse((object) => {
             if (object === sceneRoot) {
               return;
@@ -606,11 +1004,51 @@ export async function renderThree(
               contains(isolatedTarget, object);
           });
         };
-        if (isolate) {
+        if (isolate && descriptor?.isolate) {
+          descriptor.isolate();
+        } else if (isolate && selectedTarget) {
           isolateTarget(result.scene, selectedTarget);
+        } else if (isolate && semanticMembers.length > 0) {
+          const memberObjects = semanticMembers.map((member) => member.object);
+          result.scene.traverse((object) => {
+            if (object === result.scene) {
+              return;
+            }
+            object.visible =
+              Reflect.get(object, "isLight") === true ||
+              memberObjects.some(
+                (member) => contains(object, member) || contains(member, object)
+              );
+          });
         }
 
+        const cameraSnapshot = (value: import("three").Camera) => {
+          const perspective = Reflect.get(value, "isPerspectiveCamera")
+            ? (value as import("three").PerspectiveCamera)
+            : null;
+          const orthographic = Reflect.get(value, "isOrthographicCamera")
+            ? (value as import("three").OrthographicCamera)
+            : null;
+          return {
+            ...(perspective
+              ? { aspect: perspective.aspect, fov: perspective.fov }
+              : {}),
+            far: Number(Reflect.get(value, "far") ?? 0),
+            near: Number(Reflect.get(value, "near") ?? 0),
+            position: value.position.toArray(),
+            quaternion: value.quaternion.toArray(),
+            type: value.type,
+            up: value.up.toArray(),
+            ...((perspective || orthographic) && "zoom" in value
+              ? { zoom: Number(Reflect.get(value, "zoom")) }
+              : {}),
+          };
+        };
+        // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Perspective and orthographic source, fit, and fill modes must resolve together in the serialized renderer.
         const frameCamera = (framedCamera: import("three").Camera): void => {
+          if (framing === "source") {
+            return;
+          }
           const center = focus
             ? new THREE.Vector3(...focus)
             : box.getCenter(new THREE.Vector3());
@@ -630,14 +1068,19 @@ export async function renderThree(
                     Math.sin(THREE.MathUtils.degToRad(view.azimuth)),
                   Math.sin(THREE.MathUtils.degToRad(view.elevation))
                 )
-              : perspective.position.clone().sub(center);
+              : perspective
+                  .getWorldDirection(new THREE.Vector3())
+                  .multiplyScalar(-1);
             if (direction.lengthSq() === 0) {
               direction.set(1, -1, 1);
             }
             direction.normalize();
             const halfFov = THREE.MathUtils.degToRad(perspective.fov / 2);
+            const paddingFactor =
+              framing === "fill" ? Math.max(0.25, 1 - margin) : 1 + margin * 2;
             const distance =
-              ((radius / Math.sin(halfFov)) * 1.25) / Math.max(zoom, 0.001);
+              ((radius / Math.sin(halfFov)) * paddingFactor) /
+              Math.max(zoom, 0.001);
             perspective.position
               .copy(center)
               .addScaledVector(direction, distance);
@@ -653,7 +1096,9 @@ export async function renderThree(
           if (Reflect.get(framedCamera, "isOrthographicCamera")) {
             const orthographic =
               framedCamera as import("three").OrthographicCamera;
-            const extent = radius * 1.4;
+            const paddingFactor =
+              framing === "fill" ? Math.max(0.25, 1 - margin) : 1 + margin * 2;
+            const extent = radius * paddingFactor;
             orthographic.left = -extent * (width / height);
             orthographic.right = extent * (width / height);
             orthographic.top = extent;
@@ -663,8 +1108,10 @@ export async function renderThree(
           }
         };
         const camera = result.camera.clone();
+        const sourceCamera = cameraSnapshot(camera);
         frameCamera(camera);
         camera.updateMatrixWorld(true);
+        const resolvedCamera = cameraSnapshot(camera);
 
         const ownRenderer = !result.renderer;
         const renderer =
@@ -710,7 +1157,12 @@ export async function renderThree(
                   elevation: view.elevation,
                 }
               : {}),
+            framing,
+            modified:
+              JSON.stringify(sourceCamera) !== JSON.stringify(resolvedCamera),
             position: camera.position.toArray(),
+            resolved: resolvedCamera,
+            source: sourceCamera,
             target: center.toArray(),
             view: view?.label ?? "original",
             zoom,
@@ -726,8 +1178,10 @@ export async function renderThree(
       {
         background: options.background ?? null,
         focus: options.focus ?? null,
+        framing: options.framing ?? "source",
         height: options.height,
         isolate: options.isolate ?? false,
+        margin: options.margin ?? 0.12,
         nodeId: options.nodeId,
         scale: options.scale,
         view: options.view ?? null,
@@ -785,9 +1239,11 @@ export async function renderThree(
         target: rendered.camera.target as [number, number, number],
       },
       checks,
+      fixture: options.fixture,
       logicalSize: rendered.logicalSize,
       nodeId: options.nodeId,
       renderedSize: rendered.renderedSize,
+      renderer: "three",
       scale: options.scale,
       success: Object.values(checks).every(Boolean),
       timingsMs: {
@@ -801,6 +1257,480 @@ export async function renderThree(
   }
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Frame capture coordinates validation, one live scene transaction, artifact capture, and reporting without recreating state.
+export async function renderThreeFrames(
+  options: Required<
+    Pick<
+      ThreeOptions,
+      | "entry"
+      | "exportName"
+      | "height"
+      | "nodeId"
+      | "out"
+      | "props"
+      | "scale"
+      | "width"
+    >
+  > &
+    Pick<
+      ThreeOptions,
+      | "action"
+      | "actionInput"
+      | "background"
+      | "fixture"
+      | "focus"
+      | "framing"
+      | "isolate"
+      | "margin"
+      | "view"
+      | "zoom"
+    > & { frames: string }
+): Promise<FrameRenderReport> {
+  const tokens = options.frames.split(",").map((token) => token.trim());
+  if (tokens.length === 0 || tokens.some((token) => token.length === 0)) {
+    throw new Error(
+      "--frames requires before, nonnegative milliseconds, or settled."
+    );
+  }
+  const parsed = tokens.map((token) => {
+    if (token === "before" || token === "settled") {
+      return { kind: token, label: token, timeMs: null } as const;
+    }
+    const timeMs = Number(token);
+    if (!Number.isFinite(timeMs) || timeMs < 0) {
+      throw new Error(
+        `Invalid frame token ${token}; expected before, settled, or nonnegative milliseconds.`
+      );
+    }
+    return { kind: "time", label: `${timeMs}ms`, timeMs } as const;
+  });
+  const numeric = parsed.flatMap((frame) =>
+    frame.kind === "time" ? [frame.timeMs] : []
+  );
+  if (
+    numeric.some((time, index) => index > 0 && time < (numeric[index - 1] ?? 0))
+  ) {
+    throw new Error("--frames millisecond samples must be in ascending order.");
+  }
+  if (
+    parsed.some((frame, index) => frame.kind === "before" && index !== 0) ||
+    parsed.some(
+      (frame, index) => frame.kind === "settled" && index !== parsed.length - 1
+    )
+  ) {
+    throw new Error(
+      "--frames requires before first and settled last when those tokens are used."
+    );
+  }
+
+  const directory = resolve(options.out);
+  await mkdir(directory, { recursive: true });
+  const runtime = await prepareThreePage({
+    entry: options.entry,
+    exportName: options.exportName,
+    height: options.height,
+    props: options.props,
+    scale: options.scale,
+    width: options.width,
+  });
+  try {
+    const scene = await extractThreeScene(runtime.page, options);
+    if (!scene.nodes.some((node) => node.id === options.nodeId)) {
+      throw new Error(`Target node not found: ${options.nodeId}`);
+    }
+    const rendered = await runtime.page.evaluate(
+      async ({
+        action,
+        actionInput,
+        background,
+        focus,
+        framing,
+        height,
+        isolate,
+        margin,
+        nodeId,
+        scale,
+        tokens: frameTokens,
+        view,
+        width,
+        zoom,
+        // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: The timeline must remain one serialized browser transaction to preserve one fixture lifecycle.
+      }) => {
+        const browserRuntime = Reflect.get(window, "__UISCENE_THREE__") as {
+          THREE: typeof import("three");
+          result: {
+            actions?: Record<
+              string,
+              (input?: Record<string, unknown>) => void | Promise<void>
+            >;
+            camera: import("three").Camera;
+            renderer?: import("three").WebGLRenderer;
+            scene: import("three").Scene;
+            seek?: (timeMs: number) => void | Promise<void>;
+            settle?: () => void | Promise<void>;
+            targets?: Array<{
+              bounds?: import("three").Box3 | (() => import("three").Box3);
+              id: string;
+              isolate?: () => void;
+              members?: Array<{
+                instanceId?: number;
+                object: import("three").Object3D;
+              }>;
+            }>;
+          };
+        };
+        const { THREE, result } = browserRuntime;
+        const clean = (value: string): string =>
+          value
+            .normalize("NFKD")
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, "-")
+            .replace(/^-|-$/g, "")
+            .slice(0, 80);
+        const descriptor = result.targets?.find((candidate) => {
+          const id = candidate.id.startsWith("three:")
+            ? candidate.id.slice("three:".length)
+            : candidate.id;
+          return `three:${clean(id)}` === nodeId;
+        });
+        const implicitMembers: Array<{
+          instanceId: number;
+          object: import("three").Object3D;
+        }> = [];
+        result.scene.traverse((object) => {
+          const instanceIds = object.userData.sceneproofInstanceIds;
+          if (
+            Reflect.get(object, "isInstancedMesh") !== true ||
+            !Array.isArray(instanceIds)
+          ) {
+            return;
+          }
+          const count = Math.min(
+            Number(Reflect.get(object, "count") ?? 0),
+            instanceIds.length
+          );
+          for (let instanceId = 0; instanceId < count; instanceId += 1) {
+            const rawId = instanceIds[instanceId];
+            if (
+              typeof rawId === "string" &&
+              `three:${clean(rawId)}` === nodeId
+            ) {
+              implicitMembers.push({ instanceId, object });
+            }
+          }
+        });
+        const semanticMembers = descriptor?.members ?? implicitMembers;
+        let selectedTarget: import("three").Object3D | null = null;
+        result.scene.traverse((object) => {
+          if (object.userData.__uisceneRuntimeId === nodeId) {
+            selectedTarget = object;
+          }
+        });
+        if (!(selectedTarget || descriptor || semanticMembers.length > 0)) {
+          throw new Error(`Target node not found: ${nodeId}`);
+        }
+        // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Target bounds support objects, explicit semantic bounds, and individual InstancedMesh members.
+        const targetBox = (): import("three").Box3 => {
+          result.scene.updateMatrixWorld(true);
+          if (selectedTarget) {
+            return new THREE.Box3().setFromObject(selectedTarget);
+          }
+          const raw =
+            typeof descriptor?.bounds === "function"
+              ? descriptor.bounds()
+              : descriptor?.bounds;
+          if (raw?.isBox3) {
+            return raw.clone();
+          }
+          const box = new THREE.Box3();
+          for (const member of semanticMembers) {
+            if (
+              typeof member.instanceId === "number" &&
+              Reflect.get(member.object, "isInstancedMesh") === true
+            ) {
+              const mesh = member.object as import("three").InstancedMesh;
+              if (!mesh.geometry.boundingBox) {
+                mesh.geometry.computeBoundingBox();
+              }
+              if (mesh.geometry.boundingBox) {
+                const matrix = new THREE.Matrix4();
+                mesh.getMatrixAt(member.instanceId, matrix);
+                box.union(
+                  mesh.geometry.boundingBox
+                    .clone()
+                    .applyMatrix4(matrix.premultiply(mesh.matrixWorld))
+                );
+              }
+            } else {
+              box.union(new THREE.Box3().setFromObject(member.object));
+            }
+          }
+          return box;
+        };
+        const contains = (
+          ancestor: import("three").Object3D,
+          object: import("three").Object3D
+        ): boolean => {
+          let current: import("three").Object3D | null = object;
+          while (current) {
+            if (current === ancestor) {
+              return true;
+            }
+            current = current.parent;
+          }
+          return false;
+        };
+        if (isolate && descriptor?.isolate) {
+          descriptor.isolate();
+        } else if (isolate) {
+          const members = selectedTarget
+            ? [selectedTarget]
+            : semanticMembers.map((member) => member.object);
+          result.scene.traverse((object) => {
+            if (object === result.scene) {
+              return;
+            }
+            object.visible =
+              Reflect.get(object, "isLight") === true ||
+              members.some(
+                (member) => contains(object, member) || contains(member, object)
+              );
+          });
+        }
+
+        const ownRenderer = !result.renderer;
+        const renderer =
+          result.renderer ??
+          new THREE.WebGLRenderer({
+            alpha: background === "transparent",
+            antialias: true,
+            preserveDrawingBuffer: true,
+          });
+        const renderedWidth = Math.round(width * scale);
+        const renderedHeight = Math.round(height * scale);
+        renderer.setPixelRatio(1);
+        renderer.setSize(renderedWidth, renderedHeight, false);
+        if (background && background !== "transparent") {
+          renderer.setClearColor(background, 1);
+        } else if (background === "transparent") {
+          renderer.setClearColor(0x00_00_00, 0);
+        }
+
+        const sheet = document.createElement("main");
+        sheet.dataset.sceneproofFrames = "true";
+        sheet.style.background = "#0b0d14";
+        sheet.style.color = "#e5e7eb";
+        sheet.style.display = "grid";
+        sheet.style.fontFamily =
+          "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+        sheet.style.gap = "12px";
+        sheet.style.gridTemplateColumns = `repeat(2, ${renderedWidth}px)`;
+        sheet.style.padding = "16px";
+        sheet.style.width = "max-content";
+        let actionApplied = false;
+        const applyAction = async (): Promise<void> => {
+          if (actionApplied || !action) {
+            return;
+          }
+          const selectedAction = result.actions?.[action];
+          if (typeof selectedAction !== "function") {
+            throw new Error(`Scene fixture action ${action} was not found.`);
+          }
+          await selectedAction(actionInput);
+          actionApplied = true;
+        };
+        const outputs: Array<{
+          index: number;
+          label: string;
+          timeMs: number | null;
+        }> = [];
+        for (const [index, token] of frameTokens.entries()) {
+          if (token.kind === "time") {
+            // biome-ignore lint/performance/noAwaitInLoops: Timeline samples are intentionally sequential mutations of one live scene.
+            await applyAction();
+            if (typeof result.seek !== "function") {
+              throw new Error(
+                "Scene fixture does not expose seek(timeMs), required by --frames."
+              );
+            }
+            await result.seek(token.timeMs);
+          } else if (token.kind === "settled") {
+            await applyAction();
+            if (typeof result.settle !== "function") {
+              throw new Error(
+                "Scene fixture does not expose settle(), required by the settled frame."
+              );
+            }
+            await result.settle();
+          }
+          const box = targetBox();
+          const center = focus
+            ? new THREE.Vector3(...focus)
+            : box.getCenter(new THREE.Vector3());
+          const camera = result.camera.clone();
+          if (framing !== "source") {
+            const radius = Math.max(
+              box.getBoundingSphere(new THREE.Sphere()).radius,
+              0.1
+            );
+            if (Reflect.get(camera, "isPerspectiveCamera")) {
+              const perspective = camera as import("three").PerspectiveCamera;
+              perspective.aspect = width / height;
+              const direction = view
+                ? new THREE.Vector3(
+                    Math.cos(THREE.MathUtils.degToRad(view.elevation)) *
+                      Math.cos(THREE.MathUtils.degToRad(view.azimuth)),
+                    Math.cos(THREE.MathUtils.degToRad(view.elevation)) *
+                      Math.sin(THREE.MathUtils.degToRad(view.azimuth)),
+                    Math.sin(THREE.MathUtils.degToRad(view.elevation))
+                  )
+                : perspective
+                    .getWorldDirection(new THREE.Vector3())
+                    .multiplyScalar(-1);
+              direction.normalize();
+              const halfFov = THREE.MathUtils.degToRad(perspective.fov / 2);
+              const paddingFactor =
+                framing === "fill"
+                  ? Math.max(0.25, 1 - margin)
+                  : 1 + margin * 2;
+              const distance =
+                ((radius / Math.sin(halfFov)) * paddingFactor) /
+                Math.max(zoom, 0.001);
+              perspective.position
+                .copy(center)
+                .addScaledVector(direction, distance);
+              perspective.lookAt(center);
+              perspective.updateProjectionMatrix();
+            }
+          }
+          camera.updateMatrixWorld(true);
+          renderer.render(result.scene, camera);
+          const copy = document.createElement("canvas");
+          copy.dataset.sceneproofFrameIndex = String(index);
+          copy.height = renderedHeight;
+          copy.width = renderedWidth;
+          copy.style.display = "block";
+          copy.style.height = `${renderedHeight}px`;
+          copy.style.width = `${renderedWidth}px`;
+          const context = copy.getContext("2d");
+          if (!context) {
+            throw new Error("A 2D canvas is required for frame capture.");
+          }
+          context.drawImage(renderer.domElement, 0, 0);
+          const card = document.createElement("section");
+          card.style.background = "#121621";
+          card.style.border = "1px solid #252b3a";
+          const label = document.createElement("div");
+          label.style.padding = "8px 10px";
+          label.textContent = token.label;
+          card.append(copy, label);
+          sheet.append(card);
+          outputs.push({
+            index,
+            label: token.label,
+            timeMs: token.timeMs,
+          });
+        }
+        document.body.style.margin = "0";
+        document.body.replaceChildren(sheet);
+        Reflect.set(window, "__UISCENE_FRAMES_RENDERER__", {
+          ownRenderer,
+          renderer,
+        });
+        return outputs;
+      },
+      {
+        action: options.action ?? null,
+        actionInput: options.actionInput ?? {},
+        background: options.background ?? null,
+        focus: options.focus ?? null,
+        framing: options.framing ?? "source",
+        height: options.height,
+        isolate: options.isolate ?? false,
+        margin: options.margin ?? 0.12,
+        nodeId: options.nodeId,
+        scale: options.scale,
+        tokens: parsed,
+        view: options.view ?? null,
+        width: options.width,
+        zoom: options.zoom ?? 1,
+      }
+    );
+    const frames: FrameRenderReport["frames"] = [];
+    for (const frame of rendered) {
+      const filename =
+        frame.label === "before" || frame.label === "settled"
+          ? `${frame.label}.png`
+          : `${String(frame.timeMs ?? 0).padStart(4, "0")}ms.png`;
+      const artifact = join(directory, filename);
+      // biome-ignore lint/performance/noAwaitInLoops: Playwright captures labeled canvases sequentially to keep artifact attribution deterministic.
+      await runtime.page
+        .locator(`canvas[data-sceneproof-frame-index="${frame.index}"]`)
+        .screenshot({
+          animations: "disabled",
+          caret: "hide",
+          path: artifact,
+          scale: "css",
+          timeout: 120_000,
+        });
+      frames.push({
+        artifact,
+        label: frame.label,
+        timeMs: frame.timeMs,
+      });
+    }
+    const contactSheet = join(directory, "contact-sheet.png");
+    await runtime.page
+      .locator("main[data-sceneproof-frames='true']")
+      .screenshot({
+        animations: "disabled",
+        caret: "hide",
+        path: contactSheet,
+        scale: "css",
+        timeout: 120_000,
+      });
+    const manifest = join(directory, "frames.json");
+    const report: FrameRenderReport = {
+      artifacts: { contactSheet, directory, manifest },
+      command: "render-frames",
+      frames,
+      lifecycle: {
+        actions: options.action ? 1 : 0,
+        browserLaunches: 1,
+        bundles: 1,
+        frames: frames.length,
+        sceneInstances: 1,
+      },
+      success: false,
+    };
+    // Resolve the asynchronous artifact checks before persisting the report.
+    report.success =
+      frames.length === parsed.length &&
+      (
+        await Promise.all(
+          frames.map(async (frame) => (await stat(frame.artifact)).size > 0)
+        )
+      ).every(Boolean);
+    await writeFile(manifest, `${JSON.stringify(report, null, 2)}\n`);
+    await runtime.page.evaluate(() => {
+      const output = Reflect.get(window, "__UISCENE_FRAMES_RENDERER__") as
+        | {
+            ownRenderer: boolean;
+            renderer: import("three").WebGLRenderer;
+          }
+        | undefined;
+      if (output?.ownRenderer) {
+        output.renderer.dispose();
+      }
+      Reflect.deleteProperty(window, "__UISCENE_FRAMES_RENDERER__");
+    });
+    await disposeThree(runtime.page);
+    return report;
+  } finally {
+    await runtime.browser.close();
+  }
+}
+
 export async function renderThreeRegion(
   options: Required<
     Pick<
@@ -808,8 +1738,13 @@ export async function renderThreeRegion(
       "entry" | "exportName" | "width" | "height" | "scale" | "out"
     >
   > & {
+    action?: string;
+    actionInput?: Record<string, unknown>;
     region: LogicalRegion;
     background?: string;
+    fixture?: FixtureProvenance;
+    props: Record<string, unknown>;
+    timeMs?: number;
   }
 ): Promise<RegionRenderReport> {
   const totalStartedAt = performance.now();
@@ -954,12 +1889,14 @@ export async function renderThreeRegion(
     return {
       artifact: output,
       checks,
+      ...(options.fixture ? { fixture: options.fixture } : {}),
       logicalSize: {
         height: options.region.height,
         width: options.region.width,
       },
       region: options.region,
       renderedSize: rendered.renderedSize,
+      renderer: "three",
       scale: options.scale,
       success: Object.values(checks).every(Boolean),
       timingsMs: {
@@ -973,15 +1910,21 @@ export async function renderThreeRegion(
   }
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Scout owns one atomic discovery lifecycle plus the complete intent-specific evidence portfolio.
 export async function scoutThree(
   options: ThreeScoutOptions
 ): Promise<ScoutReport> {
   const totalStartedAt = performance.now();
   const runtime = await prepareThreePage({
+    ...(options.action === undefined ? {} : { action: options.action }),
+    actionInput: options.actionInput ?? {},
     entry: options.entry,
     exportName: options.exportName,
+    ...(options.fixture === undefined ? {} : { fixture: options.fixture }),
     height: options.height,
+    props: options.props,
     scale: 1,
+    ...(options.timeMs === undefined ? {} : { timeMs: options.timeMs }),
     width: options.width,
   });
   const directory = resolve(options.out);
@@ -1018,6 +1961,8 @@ export async function scoutThree(
         isolate,
         nodeId,
         specs,
+        targetBounds,
+        targetFocus,
         width,
       }) {
         const passStartedAt = performance.now();
@@ -1028,6 +1973,14 @@ export async function scoutThree(
                 camera: import("three").Camera;
                 renderer?: import("three").WebGLRenderer;
                 scene: import("three").Scene;
+                targets?: Array<{
+                  id: string;
+                  isolate?: () => void;
+                  members?: Array<{
+                    instanceId?: number;
+                    object: import("three").Object3D;
+                  }>;
+                }>;
               };
             }
           | undefined;
@@ -1047,10 +2000,10 @@ export async function scoutThree(
           return found;
         };
         const selectedTarget = findObject(nodeId);
-        if (!selectedTarget) {
-          throw new Error(`Target node not found: ${nodeId}`);
-        }
-        const targetBox = new THREE.Box3().setFromObject(selectedTarget);
+        const targetBox = new THREE.Box3(
+          new THREE.Vector3(...targetBounds.min),
+          new THREE.Vector3(...targetBounds.max)
+        );
         const targetSize = targetBox.getSize(new THREE.Vector3());
         const boundsValid =
           [targetSize.x, targetSize.y, targetSize.z].every(Number.isFinite) &&
@@ -1062,7 +2015,9 @@ export async function scoutThree(
         if (focusNodeId && !focusObject) {
           throw new Error(`Focus node not found: ${focusNodeId}`);
         }
-        let focusPoint = targetBox.getCenter(new THREE.Vector3());
+        let focusPoint = targetFocus
+          ? new THREE.Vector3(...targetFocus)
+          : targetBox.getCenter(new THREE.Vector3());
         if (focusObject) {
           focusPoint = new THREE.Box3()
             .setFromObject(focusObject)
@@ -1085,7 +2040,49 @@ export async function scoutThree(
           }
           return false;
         };
-        if (isolate) {
+        const clean = (value: string): string =>
+          value
+            .normalize("NFKD")
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, "-")
+            .replace(/^-|-$/g, "")
+            .slice(0, 80);
+        const descriptor = result.targets?.find((candidate) => {
+          const id = candidate.id.startsWith("three:")
+            ? candidate.id.slice("three:".length)
+            : candidate.id;
+          return `three:${clean(id)}` === nodeId;
+        });
+        const implicitMembers: Array<{
+          instanceId: number;
+          object: import("three").Object3D;
+        }> = [];
+        result.scene.traverse((object) => {
+          const instanceIds = object.userData.sceneproofInstanceIds;
+          if (
+            Reflect.get(object, "isInstancedMesh") !== true ||
+            !Array.isArray(instanceIds)
+          ) {
+            return;
+          }
+          const count = Math.min(
+            Number(Reflect.get(object, "count") ?? 0),
+            instanceIds.length
+          );
+          for (let instanceId = 0; instanceId < count; instanceId += 1) {
+            const rawId = instanceIds[instanceId];
+            if (
+              typeof rawId === "string" &&
+              `three:${clean(rawId)}` === nodeId
+            ) {
+              implicitMembers.push({ instanceId, object });
+            }
+          }
+        });
+        const semanticMembers = descriptor?.members ?? implicitMembers;
+        if (isolate && descriptor?.isolate) {
+          descriptor.isolate();
+        } else if (isolate && selectedTarget) {
           result.scene.traverse((object) => {
             if (object === result.scene) {
               return;
@@ -1094,6 +2091,18 @@ export async function scoutThree(
               Reflect.get(object, "isLight") === true ||
               contains(object, selectedTarget) ||
               contains(selectedTarget, object);
+          });
+        } else if (isolate && semanticMembers.length > 0) {
+          const memberObjects = semanticMembers.map((member) => member.object);
+          result.scene.traverse((object) => {
+            if (object === result.scene) {
+              return;
+            }
+            object.visible =
+              Reflect.get(object, "isLight") === true ||
+              memberObjects.some(
+                (member) => contains(object, member) || contains(member, object)
+              );
           });
         }
 
@@ -1241,6 +2250,12 @@ export async function scoutThree(
               min: depths.length > 0 ? Math.min(...depths) : 0,
             },
             clippedEdges,
+            screenBounds: {
+              height: Math.max(1, Math.ceil(intersectionHeight)),
+              width: Math.max(1, Math.ceil(intersectionWidth)),
+              x: Math.max(0, Math.floor(minimumX)),
+              y: Math.max(0, Math.floor(minimumY)),
+            },
             targetCoverage:
               (intersectionWidth * intersectionHeight) / (width * height),
           };
@@ -1546,6 +2561,18 @@ export async function scoutThree(
         isolate: options.isolate ?? true,
         nodeId: options.nodeId,
         specs: scoutCandidateSpecs(),
+        targetBounds: (
+          Reflect.get(targetNode, "bounds") as {
+            worldBox: {
+              max: [number, number, number];
+              min: [number, number, number];
+            };
+          }
+        ).worldBox,
+        targetFocus:
+          (Reflect.get(targetNode, "focus") as
+            | [number, number, number]
+            | undefined) ?? null,
         width: options.width,
       }
     );
@@ -1576,12 +2603,42 @@ export async function scoutThree(
     const ordered = [...candidates].sort(
       (left, right) => right.score - left.score
     );
+    const originalCandidate = candidates.find(
+      (candidate) => candidate.id === "original"
+    );
+    const [detailCandidate] = [...candidates]
+      .filter(
+        (candidate) =>
+          candidate.metrics.visiblePixelFraction > 0.001 &&
+          candidate.metrics.clippedEdges.length <= 3
+      )
+      .sort(
+        (left, right) =>
+          right.metrics.visiblePixelFraction -
+            left.metrics.visiblePixelFraction ||
+          right.metrics.edgeDensity - left.metrics.edgeDensity
+      );
+    const [shapeCandidate] = [...candidates]
+      .filter(
+        (candidate) =>
+          candidate.view !== "original" &&
+          candidate.metrics.visiblePixelFraction > 0.001
+      )
+      .sort((left, right) => {
+        const score = (candidate: ScoutCandidate) =>
+          candidate.metrics.edgeDensity * 4 +
+          candidate.metrics.contrastStdDev * 2 +
+          candidate.metrics.visiblePixelFraction * 0.25;
+        return score(right) - score(left);
+      });
     const structuralWarning = scene.warnings.find(
       (warning) =>
         warning.startsWith(options.nodeId) &&
         warning.toLowerCase().includes("invisible")
     );
-    const recommendedCandidate = structuralWarning ? undefined : ordered[0];
+    const recommendedCandidate = structuralWarning
+      ? undefined
+      : (detailCandidate ?? ordered[0]);
     const resolvedFocus = {
       ...candidatePass.focus,
       worldPosition: candidatePass.focus.worldPosition as [
@@ -1590,6 +2647,167 @@ export async function scoutThree(
         number,
       ],
     } as ScoutReport["focus"];
+    const detail = recommendedCandidate
+      ? {
+          candidateId: recommendedCandidate.id,
+          command: detailCommand({
+            candidate: recommendedCandidate,
+            entry: options.entry,
+            exportName: options.exportName,
+            ...(options.fixture === undefined
+              ? {}
+              : { fixture: options.fixture }),
+            focus: resolvedFocus.worldPosition,
+            height: options.height,
+            isolate: options.isolate ?? true,
+            nodeId: options.nodeId,
+            width: options.width,
+          }),
+          reason: [
+            `Places ${(recommendedCandidate.metrics.visiblePixelFraction * 100).toFixed(1)}% non-background target signal in the discovery frame.`,
+            "Uses target framing before requesting additional pixel density.",
+          ],
+          strategy: "target-camera" as const,
+        }
+      : {
+          candidateId: null,
+          command: null,
+          reason: ["No viable target-camera detail candidate was produced."],
+          strategy: "unavailable" as const,
+        };
+    const sourceBounds = originalCandidate?.metrics.screenBounds;
+    const sourceRegion = sourceBounds
+      ? (() => {
+          const paddingX = Math.ceil(sourceBounds.width * 0.18);
+          const paddingY = Math.ceil(sourceBounds.height * 0.18);
+          const x = Math.max(0, sourceBounds.x - paddingX);
+          const y = Math.max(0, sourceBounds.y - paddingY);
+          const right = Math.min(
+            options.width,
+            sourceBounds.x + sourceBounds.width + paddingX
+          );
+          const bottom = Math.min(
+            options.height,
+            sourceBounds.y + sourceBounds.height + paddingY
+          );
+          return {
+            height: Math.max(1, bottom - y),
+            width: Math.max(1, right - x),
+            x,
+            y,
+          };
+        })()
+      : null;
+    const context = originalCandidate
+      ? {
+          candidateId: originalCandidate.id,
+          command: sourceCameraCommand({
+            entry: options.entry,
+            exportName: options.exportName,
+            ...(options.fixture === undefined
+              ? {}
+              : { fixture: options.fixture }),
+            height: options.height,
+            nodeId: options.nodeId,
+            width: options.width,
+          }),
+          reason: [
+            "Preserves the literal fixture camera for composition and transition evidence.",
+          ],
+          strategy: "source-camera" as const,
+        }
+      : {
+          candidateId: null,
+          command: null,
+          reason: ["No source-camera candidate was produced."],
+          strategy: "unavailable" as const,
+        };
+    const sourceDetail =
+      originalCandidate && sourceRegion
+        ? {
+            candidateId: originalCandidate.id,
+            command: sourceRegionCommand({
+              entry: options.entry,
+              exportName: options.exportName,
+              ...(options.fixture === undefined
+                ? {}
+                : { fixture: options.fixture }),
+              height: options.height,
+              region: sourceRegion,
+              width: options.width,
+            }),
+            reason: [
+              "Rerenders the padded projected target region while preserving the source camera.",
+            ],
+            strategy: "source-region" as const,
+          }
+        : {
+            candidateId: null,
+            command: null,
+            reason: [
+              "The target has no usable source-camera projected region.",
+            ],
+            strategy: "unavailable" as const,
+          };
+    const shape = shapeCandidate
+      ? {
+          candidateId: shapeCandidate.id,
+          command: detailCommand({
+            candidate: shapeCandidate,
+            entry: options.entry,
+            exportName: options.exportName,
+            ...(options.fixture === undefined
+              ? {}
+              : { fixture: options.fixture }),
+            focus: resolvedFocus.worldPosition,
+            height: options.height,
+            isolate: options.isolate ?? true,
+            nodeId: options.nodeId,
+            width: options.width,
+          }),
+          reason: [
+            "Balances edge, contrast, and visible target evidence from a generated structural perspective.",
+          ],
+          strategy: "target-camera" as const,
+        }
+      : {
+          candidateId: null,
+          command: null,
+          reason: ["No viable structural perspective was produced."],
+          strategy: "unavailable" as const,
+        };
+    const sourceTargetPixelFraction =
+      originalCandidate?.metrics.visiblePixelFraction ?? 0;
+    const diagnosis = {
+      higherScaleWouldHelp: sourceTargetPixelFraction >= 0.18,
+      limitingFactor:
+        sourceTargetPixelFraction < 0.18
+          ? ("framing" as const)
+          : ("raster-resolution" as const),
+      sourceTargetPixelFraction,
+    };
+    const recommendations = structuralWarning
+      ? {
+          context,
+          detail: {
+            candidateId: null,
+            command: null,
+            reason: [
+              `Structural diagnostics must be resolved first: ${structuralWarning}`,
+            ],
+            strategy: "unavailable" as const,
+          },
+          shape: {
+            candidateId: null,
+            command: null,
+            reason: [
+              `Structural diagnostics must be resolved first: ${structuralWarning}`,
+            ],
+            strategy: "unavailable" as const,
+          },
+          sourceDetail,
+        }
+      : { context, detail, shape, sourceDetail };
     const recommended = structuralWarning
       ? {
           candidateId: null,
@@ -1599,26 +2817,10 @@ export async function scoutThree(
           ],
         }
       : {
-          candidateId: recommendedCandidate?.id ?? null,
-          detailCommand: recommendedCandidate
-            ? detailCommand({
-                candidate: recommendedCandidate,
-                entry: options.entry,
-                exportName: options.exportName,
-                focus: resolvedFocus.worldPosition,
-                height: options.height,
-                isolate: options.isolate ?? true,
-                nodeId: options.nodeId,
-                width: options.width,
-              })
-            : null,
+          candidateId: detail.candidateId,
+          detailCommand: detail.command,
           reason: recommendedCandidate
-            ? [
-                "Highest combined visible signal, contrast, target coverage, and edge evidence after clipping penalties.",
-                `Candidate ${recommendedCandidate.id} places ${(
-                  recommendedCandidate.metrics.visiblePixelFraction * 100
-                ).toFixed(1)}% non-background pixels in the discovery frame.`,
-              ]
+            ? [...detail.reason]
             : ["No viable candidate was produced."],
         };
     const geometry = Reflect.get(targetNode, "geometry") as
@@ -1628,19 +2830,28 @@ export async function scoutThree(
       typeof geometry?.vertexCount === "number"
         ? geometry.vertexCount
         : undefined;
+    let targetGranularity: ScoutReport["target"]["granularity"] = "object";
+    if (targetNode.kind === "SemanticTarget") {
+      targetGranularity = "semantic";
+    } else if (targetNode.children.length > 0) {
+      targetGranularity = "draw-owner";
+    }
     const report: ScoutReport = {
       artifacts,
       candidates,
+      diagnosis,
       focus: resolvedFocus,
       lifecycle: {
         browserLaunches: 1,
         bundles: 1,
         sceneInstances: 1,
       },
+      recommendations,
       recommended,
       success:
         candidates.length > 0 && (await stat(artifacts.contactSheet)).size > 0,
       target: {
+        granularity: targetGranularity,
         id: options.nodeId,
         kind: targetNode.kind,
         ...(vertexCount === undefined ? {} : { vertexCount }),
@@ -1650,7 +2861,15 @@ export async function scoutThree(
         capture: captureMs,
         total: performance.now() - totalStartedAt,
       },
-      warnings: scene.warnings,
+      warnings: [
+        ...scene.warnings,
+        ...(targetNode.kind !== "SemanticTarget" &&
+        targetNode.children.length > 0
+          ? [
+              `${options.nodeId} is a draw-owner target; its bounds may aggregate multiple logical items. Provide fixture semantic targets or sceneproofInstanceIds for instance-specific framing.`,
+            ]
+          : []),
+      ],
     };
     await writeFile(artifacts.report, `${JSON.stringify(report, null, 2)}\n`);
     await disposeThree(runtime.page);

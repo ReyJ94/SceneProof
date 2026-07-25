@@ -11,7 +11,7 @@ const CHROME_CANDIDATES = [
   "/usr/bin/chromium",
 ].filter((path): path is string => Boolean(path));
 
-function chromePath(): string {
+export function chromePath(): string {
   const path = CHROME_CANDIDATES.find(existsSync);
   if (!path) {
     throw new Error(
@@ -21,22 +21,82 @@ function chromePath(): string {
   return path;
 }
 
+export async function diagnoseBrowser(): Promise<{
+  checks: {
+    browserLaunched: boolean;
+    chromiumFound: boolean;
+    webglAvailable: boolean;
+  };
+  chromiumPath: string;
+  executionGuidance: string;
+  renderer: string | null;
+  success: boolean;
+}> {
+  const executable = chromePath();
+  const browser = await launchBrowser();
+  try {
+    const page = await browser.newPage();
+    const webgl = await page.evaluate(() => {
+      const canvas = document.createElement("canvas");
+      const context = canvas.getContext("webgl2") ?? canvas.getContext("webgl");
+      if (!context) {
+        return { available: false, renderer: null };
+      }
+      const extension = context.getExtension("WEBGL_debug_renderer_info");
+      const renderer =
+        extension === null
+          ? context.getParameter(context.RENDERER)
+          : context.getParameter(extension.UNMASKED_RENDERER_WEBGL);
+      return {
+        available: true,
+        renderer: typeof renderer === "string" ? renderer : String(renderer),
+      };
+    });
+    const checks = {
+      browserLaunched: true,
+      chromiumFound: true,
+      webglAvailable: webgl.available,
+    };
+    return {
+      checks,
+      chromiumPath: executable,
+      executionGuidance:
+        "Invoke sceneproof as the direct command with unsandboxed/local-render permission; compound shells and pipes can prevent Chromium from launching before SceneProof can report an error.",
+      renderer: webgl.renderer,
+      success: Object.values(checks).every(Boolean),
+    };
+  } finally {
+    await browser.close();
+  }
+}
+
 export async function launchBrowser(): Promise<Browser> {
   const { chromium } =
     await loadRuntimeDependency<typeof import("playwright-core")>(
       "playwright-core"
     );
-  return chromium.launch({
-    args: [
-      "--no-sandbox",
-      "--disable-dev-shm-usage",
-      "--enable-webgl",
-      "--ignore-gpu-blocklist",
-      "--use-angle=swiftshader",
-    ],
-    executablePath: chromePath(),
-    headless: true,
-  });
+  try {
+    return await chromium.launch({
+      args: [
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--enable-webgl",
+        "--ignore-gpu-blocklist",
+        "--use-angle=swiftshader",
+      ],
+      executablePath: chromePath(),
+      headless: true,
+    });
+  } catch (error) {
+    const detail =
+      error instanceof Error
+        ? (error.message.split("\n")[0] ?? error.message)
+        : String(error);
+    throw new Error(
+      `Chromium could not start. SceneProof rendering requires unsandboxed/local-render permission. Run "sceneproof doctor" as the direct command. ${detail}`,
+      { cause: error }
+    );
+  }
 }
 
 export async function mountBundle(input: {
