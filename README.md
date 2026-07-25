@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ReyJ94/SceneProof/releases/tag/v0.1.0"><img alt="Release v0.1.0" src="https://img.shields.io/badge/release-v0.1.0-E6A34D?style=flat-square" /></a>
+  <a href="https://github.com/ReyJ94/SceneProof/releases/tag/v0.2.0"><img alt="Release v0.2.0" src="https://img.shields.io/badge/release-v0.2.0-E6A34D?style=flat-square" /></a>
 </p>
 
 SceneProof lets coding agents see the interfaces and Three.js scenes they
@@ -77,8 +77,26 @@ Point SceneProof at the local executable:
 
 ```bash
 export SCENEPROOF_CHROME_PATH="/path/to/chrome"
-sceneproof --help
+sceneproof doctor
 ```
+
+</details>
+
+<details>
+<summary><strong>Chromium is blocked by an agent sandbox</strong></summary>
+
+Run `sceneproof` as the direct command with the agent's
+**unsandboxed/local-render permission**. Do not hide it inside a compound shell,
+pipe, or wrapper: those can prevent Chromium from starting before SceneProof can
+return its own diagnostic.
+
+```bash
+sceneproof doctor
+```
+
+`doctor` reports executable discovery, browser launch, WebGL availability, the
+active renderer, and the required execution guidance. A failed check exits
+non-zero.
 
 </details>
 
@@ -98,29 +116,28 @@ SceneProof closes the loop:
 
 1. **Map** the real UI or scene into stable semantic targets.
 2. **Inspect** the exact structure behind the uncertain result.
-3. **Focus** the relevant component, region, object, or world-space patch.
-4. **Render** fresh evidence from source at the perspective and quality the
-   judgment requires.
+3. **Frame** the relevant component, region, object, or world-space patch so it
+   occupies an informative part of the image.
+4. **Render** fresh evidence from source at the quality the remaining judgment
+   requires.
 5. **Verify** the artifact instead of inferring visual quality from plausible
    code.
 
-## What SceneProof gives an agent
+Camera and region selection come before pixel density. More pixels help only
+when the image already presents the evidence that matters.
+
+## Evidence model
 
 | Need | SceneProof evidence |
 | --- | --- |
 | Find the relevant thing | Compact React and Three.js trees with deterministic IDs |
 | Understand why it looks wrong | Bounds, styles, geometry, attribute ranges, materials, uniforms, lights, cameras, and relationships |
 | See it in context | Fresh source-based context renders |
-| Inspect small detail | Target and logical-region rerenders at model-chosen quality |
-| Understand 3D form | Named or exact perspectives, camera zoom, world-space focus, and isolation |
-| Find a useful camera quickly | A one-scene Scout contact sheet with ranked front, side, top, isometric, and source-camera views |
+| Inspect small detail | Target or logical-region rerenders, not enlarged screenshots |
+| Understand 3D form | Source, fitted, filled, or alternate camera views |
+| Find useful evidence quickly | A one-lifecycle Scout portfolio for context, source detail, close detail, and shape |
+| Compare an interaction | Deterministic before/time/settled frames from one bundle and one live scene |
 | Preserve model context | Compact briefings with lossless evidence available by path only when needed |
-
-This is not screenshot zoom. React detail is rerendered at a new device scale.
-Three.js detail is rerendered through a new camera and WebGL render target.
-SceneProof never enlarges an old PNG and calls it additional evidence.
-
-## Structure and pixels belong together
 
 SceneProof keeps two accounts of the result:
 
@@ -132,26 +149,11 @@ SceneProof keeps two accounts of the result:
 The render reveals that something is wrong. The structure often reveals why.
 Neither replaces the other.
 
-That distinction prevents common agent mistakes: treating a present node as a
-visible one, treating pixel density as camera zoom, repairing a shader when the
-camera is wrong, or brute-force supersampling geometry whose opacity is
-structurally zero.
-
-## Evidence without context pollution
-
-SceneProof hides renderer and extraction machinery behind six stable verbs. It
-does not force a coding agent to ingest every internal API shape.
-
 `inspect` and `scout` return compact, decision-complete briefings. Warnings,
 target identity, omission counts, provenance, and the next useful evidence stay
 inline. Exact lossless JSON is written automatically and exposed through
 `evidence.full.path`; the agent opens it only when an omitted fact can change
 the decision.
-
-Large geometry arrays, camera candidates, and complete structural reports remain
-available without flooding the model's active context. SceneProof returns the
-smallest useful briefing first and points to the preserved lossless evidence
-when deeper inspection is warranted.
 
 Piped output is compact JSON for model efficiency. Interactive terminal output
 remains formatted for humans.
@@ -166,18 +168,15 @@ remains formatted for humans.
 | `scout` | Discover useful Three.js target cameras in one scene lifecycle |
 | `render` | Produce fresh context or target evidence |
 | `render-region` | Rerender an exact logical viewport patch |
+| `doctor` | Prove Chromium and WebGL readiness and explain required permissions |
 
-There is no hydration command language, browser lifecycle API, or report-query
-DSL for the agent to manage. SceneProof owns that complexity.
+SceneProof owns renderer setup and evidence persistence. The agent chooses the
+real source boundary, declared state, semantic target, framing, and evidence
+needed to resolve the uncertainty.
 
 ## First visual proof
 
-The included object-gallery scene is self-contained. Scout can reconstruct it,
-focus the object gallery around a featured model, and produce a contact
-sheet plus exact structural evidence.
-
-<details>
-<summary><strong>Run the included Three.js example</strong></summary>
+The included object-gallery scene is self-contained:
 
 ```bash
 sceneproof tree examples/three/object-gallery.ts \
@@ -191,20 +190,35 @@ sceneproof scout examples/three/object-gallery.ts \
 ```
 
 Open `artifacts/object-gallery-scout/contact-sheet.png`. The compact Scout
-briefing also contains a reproducible detail command and paths to the full
-camera and structure reports.
+briefing explains whether framing or raster resolution is limiting and provides
+reproducible commands for the useful alternatives.
 
-</details>
+## Inspecting application source
 
-## UI workflow
+Use an existing product export whenever it already represents the real visual
+boundary. If deterministic setup is needed:
 
-SceneProof accepts a named React component export, deterministic JSON props,
-source CSS, workspace aliases, and Tailwind v4 styles. Add
-`data-sceneproof-id` to meaningful production or inspection-only targets when
-their identity should remain stable across source changes.
+- put a reusable repository-owned inspector in
+  `scripts/sceneproof/<surface>.scene.ts`;
+- put its state snapshots in `scripts/sceneproof/fixtures/`;
+- put a disposable investigation under `/tmp/sceneproof-inspectors/`;
+- never put SceneProof adapters, copied geometry, or invented state in
+  application `src`.
 
-<details>
-<summary><strong>Inspect and rerender a React target</strong></summary>
+An inspector may import the production owner unchanged, supply deterministic
+props and providers, expose semantic targets, and translate a domain action
+into the real scene lifecycle. It must not reconstruct how the application
+“probably” looks. Source reconstruction proves the current code under the
+declared fixture state; it does not prove parity with an unrecorded live browser
+state.
+
+If the real boundary cannot be loaded without manufacturing the behavior under
+test, visual verification is blocked rather than approximated.
+
+## React quick path
+
+SceneProof accepts a named component export, deterministic JSON props, source
+CSS, workspace aliases, and Tailwind v4 styles:
 
 ```bash
 sceneproof tree tests/fixtures/DemoCard.tsx \
@@ -224,52 +238,64 @@ sceneproof render tests/fixtures/DemoCard.tsx \
   --out artifacts/demo-card.png
 ```
 
-For a smaller logical patch, use `render-region`. The patch is reconstructed at
-the requested device scale rather than cropped from an earlier screenshot.
+Use `render-region` when the surrounding viewport coordinate system matters.
+It performs a fresh render at the requested device scale; it does not crop and
+enlarge an earlier PNG.
 
-</details>
+## Three.js quick path
 
-## Three.js workflow
+A Three.js entry may use **any export name**. With `--renderer auto`, SceneProof
+selects the requested export and detects Three.js from its `{ scene, camera }`
+return contract. `--renderer three` is the deterministic escape hatch when a
+factory has browser-specific setup. `defineThreeFixture` from
+`sceneproof/three` brands a factory so auto detection does not need to invoke it
+in the probe.
 
-A Three.js entry exports `createScene(context)` and returns at least
-`{ scene, camera }`. Give meaningful objects a stable
-`object.userData.sceneproofId`.
-
-Camera composition precedes pixel density. Choose a useful perspective, move
-closer, center the relevant world-space patch, and only then increase render
-scale to inspect point kernels, thin geometry, materials, aliasing, or shader
-detail.
-
-<details>
-<summary><strong>Inspect, Scout, and rerender a Three.js target</strong></summary>
+First inspect structure, then let Scout discover informative framing when the
+useful camera is uncertain:
 
 ```bash
-sceneproof node examples/three/object-gallery.ts \
-  three:collection \
-  --export createScene
+sceneproof node scripts/sceneproof/gallery.scene.ts \
+  three:featured-item \
+  --export createGalleryEvidence \
+  --props scripts/sceneproof/fixtures/selected.json
 
-sceneproof scout examples/three/object-gallery.ts \
-  three:collection \
-  --export createScene \
-  --focus-node three:featured-model \
-  --out artifacts/object-gallery-scout
-
-sceneproof render examples/three/object-gallery.ts \
-  three:collection \
-  --export createScene \
-  --view front \
-  --zoom 4 \
-  --look-at=-2.4,0.2,0 \
-  --scale 4 \
-  --isolate \
-  --out artifacts/object-gallery-detail.png
+sceneproof scout scripts/sceneproof/gallery.scene.ts \
+  three:featured-item \
+  --export createGalleryEvidence \
+  --props scripts/sceneproof/fixtures/selected.json \
+  --out artifacts/gallery-scout
 ```
 
-`--view` accepts `front`, `side`, `top`, `isometric`, or exact
-`azimuth,elevation` degrees. `--look-at` and Scout's `--focus-node` provide
-coordinate and semantic focus respectively.
+`--view original --framing source` preserves the complete source camera
+literally. `fit` contains the target. `fill` prioritizes target visibility and
+allows controlled clipping for close inspection. Scout provides four different
+evidence intentions:
 
-</details>
+- `context`: literal source composition;
+- `sourceDetail`: a fresh source-camera region render;
+- `detail`: a close view ranked for target visibility;
+- `shape`: an alternate view ranked for form evidence.
+
+Only increase `--scale` when those views already frame the relevant evidence
+and raster detail is still limiting.
+
+Fixture-owned actions and deterministic timeline sampling keep transient
+evidence in one real scene lifecycle:
+
+```bash
+sceneproof render scripts/sceneproof/gallery.scene.ts \
+  three:featured-item \
+  --export createGalleryEvidence \
+  --props scripts/sceneproof/fixtures/selected.json \
+  --action select \
+  --frames before,0,80,160,settled \
+  --framing source \
+  --out artifacts/select-transition.png
+```
+
+For the exact lifecycle, semantic target, instance ID, camera, and diagnostic
+contracts, read [the Three.js fixture protocol](docs/three-fixtures.md).
 
 ## Current scope
 
@@ -281,8 +307,12 @@ SceneProof currently supports:
 - workspace `@/` imports, JSON props, source CSS, and Tailwind v4;
 - Three.js scene graphs, transforms, world bounds, BufferGeometry attributes,
   materials, shader uniforms, textures, lights, cameras, and relationships;
-- full-quality source rerendering, isolation, camera control, region rendering,
-  Scout contact sheets, and compact evidence briefings.
+- custom-named Three.js factories, deterministic props/actions/time, source
+  camera preservation, semantic targets, stable `InstancedMesh` instance IDs,
+  and single-lifecycle frame sequences;
+- full-quality source rerendering, target-aware camera control, bounded source
+  region rendering, information-gain Scout portfolios, and compact evidence
+  briefings.
 
 SVG-native export and before/after `compare` are not implemented yet. The Bun
 compiled binary is experimental for arbitrary workspace entries with nested
@@ -313,6 +343,8 @@ The public gate runs lint, strict TypeScript 7 typechecking, the self-contained
 browser-backed test harness, and the Bun compiled build.
 
 </details>
+
+See [the changelog](CHANGELOG.md) for release-level behavior changes.
 
 ## License
 
