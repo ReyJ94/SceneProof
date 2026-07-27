@@ -53,6 +53,65 @@ export const SceneArtifactSchema = z.object({
 
 export type SceneArtifact = z.infer<typeof SceneArtifactSchema>;
 
+function editDistance(left: string, right: string): number {
+  const previous = Array.from(
+    { length: right.length + 1 },
+    (_, index) => index
+  );
+  for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
+    const current = [leftIndex];
+    for (let rightIndex = 1; rightIndex <= right.length; rightIndex += 1) {
+      current[rightIndex] = Math.min(
+        (current[rightIndex - 1] ?? 0) + 1,
+        (previous[rightIndex] ?? 0) + 1,
+        (previous[rightIndex - 1] ?? 0) +
+          (left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1)
+      );
+    }
+    previous.splice(0, previous.length, ...current);
+  }
+  return previous[right.length] ?? Math.max(left.length, right.length);
+}
+
+export function resolveSceneNodeId(
+  scene: SceneArtifact,
+  requested: string
+): string {
+  const exact = scene.nodes.find((node) => node.id === requested);
+  if (exact) {
+    return exact.id;
+  }
+  const bareMatches = scene.nodes.filter((node) => {
+    const separator = node.id.indexOf(":");
+    return separator >= 0 && node.id.slice(separator + 1) === requested;
+  });
+  const uniqueBareIds = [...new Set(bareMatches.map((node) => node.id))];
+  if (uniqueBareIds.length === 1) {
+    return uniqueBareIds[0] ?? requested;
+  }
+  const normalizedRequested = requested.toLowerCase();
+  const ranked = scene.nodes
+    .map((node) => {
+      const separator = node.id.indexOf(":");
+      const bare = separator >= 0 ? node.id.slice(separator + 1) : node.id;
+      return {
+        distance: Math.min(
+          editDistance(normalizedRequested, node.id.toLowerCase()),
+          editDistance(normalizedRequested, bare.toLowerCase())
+        ),
+        id: node.id,
+      };
+    })
+    .sort((left, right) => left.distance - right.distance);
+  const [suggestion] = ranked;
+  const threshold = Math.max(2, Math.ceil(requested.length * 0.35));
+  const hint =
+    suggestion && suggestion.distance <= threshold
+      ? ` Did you mean ${suggestion.id}?`
+      : "";
+  throw new Error(`Target node not found: ${requested}.${hint}`);
+}
+
 export type RenderChecks = {
   moduleLoaded: boolean;
   exportFound: boolean;
@@ -60,6 +119,134 @@ export type RenderChecks = {
   boundsValid: boolean;
   requestedScaleAchieved: boolean;
   outputNonempty: boolean;
+  evidenceJudgeable?: boolean;
+};
+
+export type RasterStats = {
+  background: {
+    color: [number, number, number, number];
+    luminance: number;
+  };
+  coverageFraction: number;
+  luminance: {
+    max: number;
+    p10: number;
+    p50: number;
+    p90: number;
+    p99: number;
+  };
+};
+
+export type RasterizerInfo = {
+  kind: "hardware-or-unknown" | "swiftshader-cpu";
+  renderer: string | null;
+};
+
+export type RenderQuality = {
+  explanation: string;
+  judgeable: boolean;
+  limitingFactor: "contrast" | "dispersion" | "framing" | null;
+  targetProjectedCoverage: number;
+  targetProjectedPixelSize: {
+    height: number;
+    width: number;
+  };
+  targetSignalCoverage: number;
+  surfaceJudgeable: boolean;
+  surfaceLuminanceSpread: number;
+  surfaceLuminanceThreshold: number;
+};
+
+export type ReferenceComparisonReport = {
+  alignment?: {
+    mode: "center-height-preserving-aspect";
+    scale: number;
+    translate: [number, number];
+  };
+  analysisAvailable: boolean;
+  composition?: {
+    current: {
+      center: [number, number];
+      size: [number, number];
+    };
+    delta: {
+      center: [number, number];
+      size: [number, number];
+    };
+    reference: {
+      center: [number, number];
+      size: [number, number];
+    };
+  };
+  artifacts: {
+    contactSheet: string;
+    difference?: string;
+    silhouetteOverlay?: string;
+  };
+  histograms?: {
+    current: {
+      luminance: {
+        max: number;
+        p10: number;
+        p50: number;
+        p90: number;
+      };
+      sampleCount: number;
+    };
+    reference: {
+      luminance: {
+        max: number;
+        p10: number;
+        p50: number;
+        p90: number;
+      };
+      sampleCount: number;
+    };
+  };
+  mask: {
+    backgroundColorDistanceP90?: number;
+    bounds?: LogicalRegion;
+    confidence: number;
+    foregroundFraction: number;
+    method: "automatic" | "automatic-region" | "explicit-mask";
+    minimumConfidence: number;
+    reason?: string;
+  };
+  probes: Array<{
+    current: ReferenceProbeSample;
+    normalized: [number, number];
+    reference: ReferenceProbeSample;
+  }>;
+  silhouette?: {
+    areaIoU: number;
+    aspectRatio: ReferenceMetricDelta;
+    caveat: string;
+    tipConvergenceAngle: ReferenceMetricDelta & {
+      algorithm: "outer-envelope-upper-third-linear-fit";
+    };
+    widestPointHeightFraction: ReferenceMetricDelta;
+  };
+  source: {
+    maskPath: string | null;
+    path: string;
+    region: LogicalRegion | null;
+  };
+};
+
+type ReferenceMetricDelta = {
+  current: number;
+  delta: number;
+  reference: number;
+};
+
+type ReferenceProbeSample = {
+  luminance: number;
+  pixel: [number, number];
+  rgba: [number, number, number, number];
+  similarColorRun: {
+    horizontalPx: number;
+    verticalPx: number;
+  };
 };
 
 export type RenderReport = {
@@ -76,6 +263,40 @@ export type RenderReport = {
   scale: number;
   artifact: string;
   checks: RenderChecks;
+  comparison?: {
+    artifacts: {
+      difference: string;
+      sideBySide: string;
+    };
+    changedBounds: LogicalRegion | null;
+    changedPixelFraction: number;
+    classification: "below-perceptual-floor" | "changed" | "identical";
+    normalizedRasterDelta: number;
+    previous: string;
+  };
+  reference?: ReferenceComparisonReport;
+  silhouette?:
+    | {
+        available: true;
+        areaPixels: number;
+        artifact: string;
+        caveat: string;
+        compactness: number;
+        granularity: "draw-owner" | "target";
+        ignoredNonMeshCount: number;
+        perimeterPixels: number;
+        profile: {
+          curvatureSignChanges: number;
+          highFrequencyDirectionReversals: number;
+          maximumDeviationFromLocalTrendPx: number;
+        };
+        targetMeshCount: number;
+      }
+    | {
+        available: false;
+        caveat: string;
+        reason: string;
+      };
   camera?: {
     azimuth?: number;
     elevation?: number;
@@ -94,7 +315,23 @@ export type RenderReport = {
     total: number;
   };
   fixture?: unknown;
+  context?: {
+    backgroundPresent: boolean;
+    contextRenderableCount: number;
+    empty: boolean;
+    environmentPresent: boolean;
+    targetRenderableCount: number;
+    totalRenderableCount: number;
+  };
+  isolation?: {
+    lightsPreserved: number;
+    requested: boolean;
+  };
+  quality?: RenderQuality;
+  rasterizer?: RasterizerInfo;
   renderer?: "react" | "three";
+  stats?: RasterStats;
+  warnings?: string[];
 };
 
 export type CameraSnapshot = {
@@ -142,7 +379,9 @@ export type RegionRenderReport = {
     total: number;
   };
   fixture?: unknown;
+  rasterizer?: RasterizerInfo;
   renderer?: "react" | "three";
+  stats?: RasterStats;
 };
 
 export type ScoutCandidateMetrics = {
@@ -204,8 +443,9 @@ export type ScoutReport = {
   };
   diagnosis: {
     higherScaleWouldHelp: boolean;
-    limitingFactor: "framing" | "raster-resolution";
+    limitingFactor: "contrast" | "dispersion" | "framing" | "raster-resolution";
     sourceTargetPixelFraction: number;
+    sourceProjectedCoverage?: number;
   };
   recommendations: {
     context: ScoutRecommendation;
@@ -225,6 +465,7 @@ export type ScoutReport = {
     candidates: number;
     total: number;
   };
+  rasterizer?: RasterizerInfo;
   warnings: string[];
 };
 
@@ -242,6 +483,17 @@ export type FrameRenderReport = {
     manifest: string;
   };
   command: "render-frames";
+  action: {
+    mutatedObjectCount: number | null;
+    requested: boolean;
+  };
+  comparisons: Array<{
+    changedPixelFraction: number;
+    classification: "below-perceptual-floor" | "changed" | "identical";
+    from: string;
+    normalizedRasterDelta: number;
+    to: string;
+  }>;
   frames: Array<{
     artifact: string;
     label: string;
@@ -254,5 +506,72 @@ export type FrameRenderReport = {
     frames: number;
     sceneInstances: 1;
   };
+  quality: {
+    motionDetected: boolean;
+    perceptualFloor: {
+      changedPixelFraction: number;
+      normalizedRasterDelta: number;
+    };
+  };
+  rasterizer?: RasterizerInfo;
   success: boolean;
+  warnings: string[];
+};
+
+export type SweepRenderReport = {
+  artifacts: {
+    contactSheet: string;
+    directory: string;
+    manifest: string;
+  };
+  command: "render-sweep";
+  comparisons: {
+    changedPixelFraction: number;
+    classification: "below-perceptual-floor" | "changed" | "identical";
+    from: string;
+    normalizedRasterDelta: number;
+    to: string;
+  }[];
+  lifecycle: {
+    browserLaunches: number;
+    bundles: number;
+    sceneInstances: number;
+  };
+  recommendation?: {
+    basis: "highest-reference-fit";
+    caveat: string;
+    index: number;
+    label: string;
+    score: number;
+    value: unknown;
+  };
+  success: boolean;
+  sweep: {
+    objective: "appearance" | "balanced" | "composition" | "geometry";
+    path: string;
+    values: unknown[];
+  };
+  variants: {
+    artifact: string;
+    index: number;
+    label: string;
+    quality?: RenderQuality;
+    reference?: ReferenceComparisonReport;
+    referenceFit?: {
+      components: {
+        aspectRatio: number;
+        composition: number;
+        luminance: number;
+        silhouetteIoU: number;
+        tipConvergence: number;
+        widestPoint: number;
+      };
+      luminanceMeanAbsoluteDelta: number;
+      objective: "appearance" | "balanced" | "composition" | "geometry";
+      score: number;
+    };
+    success: boolean;
+    value: unknown;
+  }[];
+  warnings: string[];
 };

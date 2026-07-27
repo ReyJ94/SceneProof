@@ -2,7 +2,7 @@
 
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { Command } from "commander";
 import { z } from "zod";
 
@@ -18,6 +18,10 @@ import {
   renderReactRegion,
 } from "./react-renderer.js";
 import {
+  type ReferenceViewInput,
+  renderThreeReferenceSet,
+} from "./reference-set.js";
+import {
   detectRenderer,
   probeRenderer,
   type RendererKind,
@@ -28,6 +32,7 @@ import type {
   SceneArtifact,
   ScoutReport,
 } from "./scene-schema.js";
+import { resolveSceneNodeId } from "./scene-schema.js";
 import {
   type FixtureProvenance,
   inspectThree,
@@ -38,6 +43,7 @@ import {
   type ThreeFraming,
   type ThreeTargetView,
 } from "./three-renderer.js";
+import { renderThreeSweep } from "./three-sweep.js";
 
 const rendererProbeInput = rendererProbeInputFromEnvironment();
 if (rendererProbeInput) {
@@ -56,6 +62,10 @@ const RegionTuple = z.tuple([
   z.coerce.number().nonnegative(),
   z.coerce.number().positive(),
   z.coerce.number().positive(),
+]);
+const NormalizedProbeTuple = z.tuple([
+  z.coerce.number().min(0).max(1),
+  z.coerce.number().min(0).max(1),
 ]);
 const ViewTuple = z.tuple([z.coerce.number(), z.coerce.number()]);
 const Vector3Tuple = z.tuple([
@@ -83,11 +93,21 @@ type CommonOptions = {
 };
 
 type RenderOptions = CommonOptions & {
+  compare?: string;
   frames?: string;
   framing?: string;
   margin: string;
+  probe?: string[];
+  reference?: string;
+  referenceSet?: string;
+  referenceMask?: string;
+  referenceRegion?: string;
   scale: string;
+  silhouette?: boolean;
   out?: string;
+  stats?: boolean;
+  sweep?: string;
+  sweepObjective?: string;
 };
 
 function fixtureOptions(command: Command, defaultExport: string): Command {
@@ -129,6 +149,49 @@ function renderOptions(command: Command): Command {
       "--frames <before,ms...,settled>",
       "capture a deterministic Three.js sequence in one scene lifecycle"
     )
+    .option(
+      "--stats",
+      "include Three.js raster luminance, background, and signal statistics"
+    )
+    .option(
+      "--compare <previous.png>",
+      "compare the current Three.js render with a same-size prior PNG"
+    )
+    .option(
+      "--silhouette",
+      "extract a target-only mask and geometric contour measurements"
+    )
+    .option(
+      "--reference <image>",
+      "compare the target with a reference image using aligned subject evidence"
+    )
+    .option(
+      "--reference-set <json>",
+      "compare labeled camera views with a multi-perspective reference manifest"
+    )
+    .option(
+      "--reference-mask <png>",
+      "exact reference-sized binary subject mask"
+    )
+    .option(
+      "--reference-region <x,y,width,height>",
+      "constrain automatic reference subject extraction"
+    )
+    .option(
+      "--probe <x,y>",
+      "normalized subject-space pixel probe; repeatable",
+      (value: string, previous: string[]) => [...previous, value],
+      []
+    )
+    .option(
+      "--sweep <prop.path=values>",
+      "render 2-12 comma-separated scalar values for one fixture-prop path"
+    )
+    .option(
+      "--sweep-objective <balanced|geometry|appearance|composition>",
+      "choose which reference evidence ranks sweep variants",
+      "balanced"
+    )
     .option("--out <path>", "artifact output path");
 }
 
@@ -136,6 +199,7 @@ function scoutOptions(command: Command): Command {
   return fixtureOptions(command, "createScene")
     .option("--focus-node <node-id>", "center cameras on another scene node")
     .option("--look-at <x,y,z>", "center cameras on a world-space point")
+    .option("--isolate", "isolate the target (the Scout default)")
     .option("--no-isolate", "include unrelated objects in discovery views")
     .option("--background <color>", "background color or transparent")
     .option(
@@ -244,6 +308,7 @@ async function scoutBriefing(report: ScoutReport) {
     focus: report.focus,
     lifecycle: report.lifecycle,
     presentation: "brief",
+    rasterizer: report.rasterizer,
     recommendations: report.recommendations,
     recommended: report.recommended,
     success: report.success,
@@ -333,6 +398,102 @@ function parseRegion(
     );
   }
   return { height, width, x, y };
+}
+
+function parseUnboundedRegion(value: string): LogicalRegion {
+  const [x, y, width, height] = RegionTuple.parse(value.split(","));
+  return { height, width, x, y };
+}
+
+function parseNormalizedProbe(value: string): [number, number] {
+  return NormalizedProbeTuple.parse(value.split(","));
+}
+
+function parseSweep(value: string): { path: string; values: unknown[] } {
+  const separator = value.indexOf("=");
+  if (separator <= 0 || separator === value.length - 1) {
+    throw new Error(
+      "--sweep requires prop.path=value1,value2 with at least two scalar values."
+    );
+  }
+  const path = value.slice(0, separator).trim();
+  const tokens = value
+    .slice(separator + 1)
+    .split(",")
+    .map((token) => token.trim());
+  if (
+    tokens.length < 2 ||
+    tokens.length > 12 ||
+    tokens.some((token) => !token)
+  ) {
+    throw new Error("--sweep requires between 2 and 12 scalar values.");
+  }
+  const values = tokens.map((token) => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(token);
+    } catch {
+      return token;
+    }
+    if (typeof parsed === "object" && parsed !== null) {
+      throw new Error(
+        "--sweep values must be JSON scalars; arrays and objects are not supported."
+      );
+    }
+    return parsed;
+  });
+  return { path, values };
+}
+
+const ReferenceSetSchema = z.object({
+  references: z
+    .array(
+      z.object({
+        framing: z.enum(["source", "fit", "fill"]).optional(),
+        label: z.string().trim().min(1),
+        maskPath: z.string().optional(),
+        path: z.string().min(1),
+        probes: z.array(NormalizedProbeTuple).optional(),
+        region: RegionTuple.optional(),
+        view: z.string().default("original"),
+        zoom: z.coerce.number().positive().optional(),
+      })
+    )
+    .min(2)
+    .max(8),
+});
+
+async function parseReferenceSet(path: string): Promise<ReferenceViewInput[]> {
+  const absoluteManifest = resolve(path);
+  const directory = dirname(absoluteManifest);
+  const parsed = ReferenceSetSchema.parse(
+    JSON.parse(await readFile(absoluteManifest, "utf8"))
+  );
+  return parsed.references.map((reference) => {
+    const view = parseThreeView(reference.view);
+    return {
+      ...(reference.framing ? { framing: reference.framing } : {}),
+      label: reference.label,
+      ...(reference.maskPath
+        ? { maskPath: resolve(directory, reference.maskPath) }
+        : {}),
+      path: resolve(directory, reference.path),
+      probes: reference.probes ?? [],
+      ...(reference.region
+        ? {
+            region: {
+              height: reference.region[3],
+              width: reference.region[2],
+              x: reference.region[0],
+              y: reference.region[1],
+            },
+          }
+        : {}),
+      ...(view ? { view } : {}),
+      viewLabel: reference.view,
+      ...(reference.zoom ? { zoom: reference.zoom } : {}),
+    };
+  });
 }
 
 function parseThreeView(
@@ -474,9 +635,10 @@ function compactTree(scene: SceneArtifact) {
 }
 
 function nodeDetail(scene: SceneArtifact, nodeId: string) {
-  const node = scene.nodes.find((candidate) => candidate.id === nodeId);
+  const resolvedNodeId = resolveSceneNodeId(scene, nodeId);
+  const node = scene.nodes.find((candidate) => candidate.id === resolvedNodeId);
   if (!node) {
-    throw new Error(`Target node not found: ${nodeId}`);
+    throw new Error(`Resolved node is missing: ${resolvedNodeId}`);
   }
   const summary = (id: string) => {
     const related = scene.nodes.find((candidate) => candidate.id === id);
@@ -494,8 +656,9 @@ function nodeDetail(scene: SceneArtifact, nodeId: string) {
   const parentId =
     typeof node.parent === "string"
       ? node.parent
-      : scene.relationships.find((relationship) => relationship.to === nodeId)
-          ?.from;
+      : scene.relationships.find(
+          (relationship) => relationship.to === resolvedNodeId
+        )?.from;
   return {
     children: node.children.map(summary),
     entry: scene.entry,
@@ -575,15 +738,43 @@ renderOptions(
     }
     // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This command boundary validates mutually exclusive React and Three.js render surfaces before dispatch.
   ) => {
+    if (
+      !(raw.reference || raw.referenceSet) &&
+      (raw.referenceMask || raw.referenceRegion || (raw.probe?.length ?? 0) > 0)
+    ) {
+      throw new Error(
+        "--reference-mask, --reference-region, and --probe require --reference."
+      );
+    }
+    if (raw.reference && raw.referenceSet) {
+      throw new Error(
+        "--reference and --reference-set are mutually exclusive."
+      );
+    }
+    if (
+      raw.referenceSet &&
+      (raw.referenceMask ||
+        raw.referenceRegion ||
+        (raw.probe?.length ?? 0) > 0 ||
+        raw.view !== "original")
+    ) {
+      throw new Error(
+        "--reference-set owns per-view masks, regions, probes, and cameras through its manifest."
+      );
+    }
     const prepared = await prepareSource(entry, raw);
     const scale = PositiveScale.parse(raw.scale);
     const framing = FramingSchema.parse(
       raw.framing ?? (raw.view === "original" ? "source" : "fit")
     ) as ThreeFraming;
     const margin = NonnegativeNumber.parse(raw.margin);
-    const out = resolve(
-      raw.out ?? (raw.frames ? "sceneproof-frames" : "sceneproof-render.png")
-    );
+    let defaultOutput = "sceneproof-render.png";
+    if (raw.frames) {
+      defaultOutput = "sceneproof-frames";
+    } else if (raw.referenceSet) {
+      defaultOutput = "sceneproof-reference-set";
+    }
+    const out = resolve(raw.out ?? defaultOutput);
     if (prepared.renderer === "three") {
       const view = parseThreeView(raw.view);
       if (
@@ -616,7 +807,36 @@ renderOptions(
         ...(view === undefined ? {} : { view }),
         zoom: PositiveScale.parse(raw.zoom),
       };
+      if (raw.referenceSet) {
+        if (raw.frames || raw.sweep || raw.compare) {
+          throw new Error(
+            "--reference-set cannot be combined with --frames, --sweep, or --compare."
+          );
+        }
+        output(
+          await renderThreeReferenceSet({
+            ...common,
+            out,
+            references: await parseReferenceSet(raw.referenceSet),
+          })
+        );
+        return;
+      }
       if (raw.frames) {
+        if (
+          raw.stats ||
+          raw.compare ||
+          raw.silhouette ||
+          raw.reference ||
+          raw.referenceMask ||
+          raw.referenceRegion ||
+          raw.sweep ||
+          (raw.probe?.length ?? 0) > 0
+        ) {
+          throw new Error(
+            "--stats, --compare, --silhouette, reference options, and --sweep cannot be combined with --frames; frame sequences report adjacent motion comparisons."
+          );
+        }
         output(
           await renderThreeFrames({
             ...common,
@@ -626,10 +846,69 @@ renderOptions(
         );
         return;
       }
+      if (raw.sweep) {
+        if (
+          raw.stats ||
+          raw.compare ||
+          raw.silhouette ||
+          (!raw.reference &&
+            (raw.referenceMask ||
+              raw.referenceRegion ||
+              (raw.probe?.length ?? 0) > 0))
+        ) {
+          throw new Error(
+            "--sweep cannot be combined with --stats, --compare, or --silhouette; reference masks, regions, and probes require --reference."
+          );
+        }
+        output(
+          await renderThreeSweep({
+            ...common,
+            out,
+            ...(raw.reference
+              ? {
+                  reference: {
+                    ...(raw.referenceMask
+                      ? { maskPath: resolve(raw.referenceMask) }
+                      : {}),
+                    path: resolve(raw.reference),
+                    probes: (raw.probe ?? []).map(parseNormalizedProbe),
+                    ...(raw.referenceRegion
+                      ? { region: parseUnboundedRegion(raw.referenceRegion) }
+                      : {}),
+                  },
+                }
+              : {}),
+            sweep: {
+              ...parseSweep(raw.sweep),
+              objective: z
+                .enum(["balanced", "geometry", "appearance", "composition"])
+                .parse(raw.sweepObjective),
+            },
+          })
+        );
+        return;
+      }
       output(
         await renderThree({
           ...common,
+          ...(raw.compare ? { compare: resolve(raw.compare) } : {}),
           out,
+          ...(raw.reference
+            ? {
+                reference: {
+                  ...(raw.referenceMask
+                    ? { maskPath: resolve(raw.referenceMask) }
+                    : {}),
+                  path: resolve(raw.reference),
+                  probes: (raw.probe ?? []).map(parseNormalizedProbe),
+                  ...(raw.referenceRegion
+                    ? { region: parseUnboundedRegion(raw.referenceRegion) }
+                    : {}),
+                },
+              }
+            : {}),
+          silhouette: raw.silhouette ?? false,
+          stats: raw.stats ?? false,
         })
       );
       return;
@@ -639,10 +918,18 @@ renderOptions(
       raw.zoom !== "1" ||
       raw.lookAt ||
       raw.frames ||
-      raw.framing
+      raw.framing ||
+      raw.stats ||
+      raw.compare ||
+      raw.silhouette ||
+      raw.reference ||
+      raw.referenceMask ||
+      raw.referenceRegion ||
+      raw.sweep ||
+      (raw.probe?.length ?? 0) > 0
     ) {
       throw new Error(
-        "--view, --zoom, --look-at, --framing, and --frames are Three.js render options."
+        "--view, --zoom, --look-at, --framing, --frames, --stats, --compare, --silhouette, reference comparison, and --sweep are Three.js render options."
       );
     }
     output(
@@ -676,6 +963,19 @@ renderOptions(
     entry: string,
     raw: RenderOptions & { region: string; background?: string }
   ) => {
+    if (
+      raw.compare ||
+      raw.silhouette ||
+      raw.reference ||
+      raw.referenceMask ||
+      raw.referenceRegion ||
+      raw.sweep ||
+      (raw.probe?.length ?? 0) > 0
+    ) {
+      throw new Error(
+        "--compare, --silhouette, reference comparison, and --sweep currently belong to target render, not render-region."
+      );
+    }
     const prepared = await prepareSource(entry, raw);
     const scale = PositiveScale.parse(raw.scale);
     const region = parseRegion(raw.region, {
@@ -696,6 +996,7 @@ renderOptions(
           props: prepared.props,
           region,
           scale,
+          stats: raw.stats ?? false,
           ...(prepared.timeMs === undefined ? {} : { timeMs: prepared.timeMs }),
           width: prepared.width,
           ...(raw.background === undefined
@@ -704,6 +1005,9 @@ renderOptions(
         })
       );
       return;
+    }
+    if (raw.stats) {
+      throw new Error("--stats currently requires a Three.js render.");
     }
     output(
       await renderReactRegion({

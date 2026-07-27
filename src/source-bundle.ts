@@ -27,6 +27,23 @@ export type BrowserBundle = {
   inputs: string[];
 };
 
+const TRANSIENT_ESBUILD_SERVICE_ERROR =
+  /(?:The service was stopped|service is no longer running).*(?:EPERM|operation not permitted|send)/is;
+
+export async function retryTransientEsbuildService<T>(
+  operation: () => Promise<T>
+): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!TRANSIENT_ESBUILD_SERVICE_ERROR.test(message)) {
+      throw error;
+    }
+    return operation();
+  }
+}
+
 function resolveSourcePath(base: string): string | null {
   if (existsSync(base)) {
     return base;
@@ -189,29 +206,31 @@ export async function bundleBrowserDriver(input: {
 }): Promise<BrowserBundle> {
   const { build } =
     await loadRuntimeDependency<typeof import("esbuild")>("esbuild");
-  const result = await build({
-    absWorkingDir: dirname(input.entry),
-    bundle: true,
-    define: {
-      "process.env.NODE_ENV": '"production"',
-    },
-    format: "iife",
-    jsx: "automatic",
-    logLevel: "silent",
-    metafile: true,
-    outdir: "out",
-    platform: "browser",
-    plugins: [sourceResolutionPlugin()],
-    sourcemap: "inline",
-    stdin: {
-      contents: input.source,
-      loader: "tsx",
-      resolveDir: dirname(input.entry),
-      sourcefile: "uiscene-browser-driver.tsx",
-    },
-    target: ["chrome120"],
-    write: false,
-  });
+  const result = await retryTransientEsbuildService(() =>
+    build({
+      absWorkingDir: dirname(input.entry),
+      bundle: true,
+      define: {
+        "process.env.NODE_ENV": '"production"',
+      },
+      format: "iife",
+      jsx: "automatic",
+      logLevel: "silent",
+      metafile: true,
+      outdir: "out",
+      platform: "browser",
+      plugins: [sourceResolutionPlugin()],
+      sourcemap: "inline",
+      stdin: {
+        contents: input.source,
+        loader: "tsx",
+        resolveDir: dirname(input.entry),
+        sourcefile: "uiscene-browser-driver.tsx",
+      },
+      target: ["chrome120"],
+      write: false,
+    })
+  );
 
   const javascript = result.outputFiles.find((file) =>
     file.path.endsWith(".js")

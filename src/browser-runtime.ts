@@ -29,6 +29,10 @@ export async function diagnoseBrowser(): Promise<{
   };
   chromiumPath: string;
   executionGuidance: string;
+  rasterizer: {
+    kind: "hardware-or-unknown" | "swiftshader-cpu";
+    renderer: string | null;
+  };
   renderer: string | null;
   success: boolean;
 }> {
@@ -62,6 +66,13 @@ export async function diagnoseBrowser(): Promise<{
       chromiumPath: executable,
       executionGuidance:
         "Invoke sceneproof as the direct command with unsandboxed/local-render permission; compound shells and pipes can prevent Chromium from launching before SceneProof can report an error.",
+      rasterizer: {
+        kind:
+          webgl.renderer?.toLowerCase().includes("swiftshader") === true
+            ? "swiftshader-cpu"
+            : "hardware-or-unknown",
+        renderer: webgl.renderer,
+      },
       renderer: webgl.renderer,
       success: Object.values(checks).every(Boolean),
     };

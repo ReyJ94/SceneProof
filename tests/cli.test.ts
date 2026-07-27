@@ -23,6 +23,15 @@ const entry = resolve(root, "tests/fixtures/DemoCard.tsx");
 const threeEntry = resolve(root, "examples/three/object-gallery.ts");
 const invisiblePointsEntry = resolve(root, "tests/fixtures/InvisiblePoints.ts");
 const advancedSceneEntry = resolve(root, "tests/fixtures/AdvancedScene.ts");
+const litIsolateEntry = resolve(root, "tests/fixtures/LitIsolateScene.ts");
+const nestedPropsEntry = resolve(root, "tests/fixtures/NestedPropsCard.tsx");
+const staticActionEntry = resolve(root, "tests/fixtures/StaticActionScene.ts");
+const darkContrastEntry = resolve(root, "tests/fixtures/DarkContrastScene.ts");
+const silhouetteEntry = resolve(root, "tests/fixtures/SilhouetteScene.ts");
+const ambiguousReferenceEntry = resolve(
+  root,
+  "tests/fixtures/AmbiguousReferenceScene.ts"
+);
 const advancedProps = resolve(root, "tests/fixtures/advanced-props.json");
 const actionInput = resolve(root, "tests/fixtures/action-input.json");
 const props = resolve(root, "tests/fixtures/props.json");
@@ -47,6 +56,23 @@ const CHROMIUM_PERMISSION_ERROR =
   /Chromium could not start.*unsandboxed\/local-render permission/is;
 const STRUCTURAL_REASON = /structural/i;
 const SCENEPROOF_USAGE = /Usage: sceneproof/;
+const DID_YOU_MEAN_SEMANTIC_FOCUS = /Did you mean three:semantic-focus/i;
+const NESTED_PROPS_COMPONENT = /NestedPropsCard/;
+const MENU_STAGE_ACCESS = /menuStage/;
+const PROPS_FLAG = /--props/;
+const TARGET_WAS_LOCATED = /target was located/i;
+const LITERAL_FIXTURE_CAMERA = /literal fixture camera/i;
+const NO_VISUAL_TRANSITION = /no visual transition/i;
+const ZERO_SCENE_OBJECT_MUTATIONS = /mutated 0 scene objects/i;
+const EMPTY_CONTEXT_WARNING = /without other renderable scene context/i;
+const SURFACE_RANGE_WARNING = /surface.*dynamic range/i;
+const MEASUREMENT_NOT_TASTE = /measurement.*not.*taste/i;
+const REFERENCE_CONFIDENCE_WARNING = /reference subject.*confidence/i;
+const REFERENCE_OPTION_DEPENDENCY = /reference-mask.*require.*reference/i;
+const REFERENCE_MASK_DIMENSIONS = /mask dimensions differ.*reference/i;
+const COMPETING_REFERENCE_COMPONENTS = /competing.*components/i;
+const SWEEP_NO_VISUAL_CHANGE = /sweep.*no adjacent visual change/i;
+const NOT_A_TASTE_VERDICT = /not a taste verdict/i;
 
 type CliResult = {
   readonly status: number | null;
@@ -256,6 +282,150 @@ test("passes props, fixture actions, and deterministic time to Three.js", () => 
   assert.equal(detail.node.bounds.worldBox.max[2], 4);
   assert.ok(detail.node.bounds.worldBox.min[0] < 3);
   assert.ok(detail.node.bounds.worldBox.max[0] > 5);
+  assert.equal(detail.node.selection.memberCount, 1);
+  assert.equal(detail.node.drawOwner.id, "three:focus-object");
+  assert.equal(detail.node.drawOwner.kind, "Mesh");
+  assert.equal(detail.node.drawOwner.geometry.type, "BoxGeometry");
+  assert.equal(detail.node.drawOwner.material.type, "MeshBasicMaterial");
+  assert.equal(detail.node.drawOwner.material.color, "#f2a65a");
+});
+
+test("accepts the bare target ID printed by tree and suggests the canonical ID on misses", () => {
+  const accepted = runCli([
+    "node",
+    advancedSceneEntry,
+    "semantic-focus",
+    "--export",
+    "createConfiguredScene",
+    "--renderer",
+    "three",
+    "--width",
+    "320",
+    "--height",
+    "240",
+  ]);
+
+  assert.equal(accepted.status, 0, accepted.stderr);
+  assert.equal(JSON.parse(accepted.stdout).node.id, "three:semantic-focus");
+
+  const missed = runCli([
+    "node",
+    advancedSceneEntry,
+    "semantic-focu",
+    "--export",
+    "createConfiguredScene",
+    "--renderer",
+    "three",
+    "--width",
+    "320",
+    "--height",
+    "240",
+  ]);
+
+  assert.notEqual(missed.status, 0);
+  assert.match(missed.stderr, DID_YOU_MEAN_SEMANTIC_FOCUS);
+});
+
+test("reports light physics and keeps lights visible after fixture-owned isolation", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-lit-isolate-"));
+  const output = join(directory, "isolated.png");
+
+  try {
+    const detail = runCli([
+      "node",
+      litIsolateEntry,
+      "key-light",
+      "--export",
+      "createScene",
+      "--renderer",
+      "three",
+      "--width",
+      "160",
+      "--height",
+      "120",
+    ]);
+    assert.equal(detail.status, 0, detail.stderr);
+    const light = JSON.parse(detail.stdout).node;
+    assert.equal(light.light.type, "DirectionalLight");
+    assert.equal(light.light.color, "#ffffff");
+    assert.equal(light.light.intensity, 3);
+    assert.deepEqual(light.light.position, [2, -3, 4]);
+    assert.deepEqual(light.light.target, [0, 0, 0]);
+
+    const rendered = runCli([
+      "render",
+      litIsolateEntry,
+      "subject",
+      "--export",
+      "createScene",
+      "--renderer",
+      "three",
+      "--isolate",
+      "--framing",
+      "fit",
+      "--stats",
+      "--width",
+      "160",
+      "--height",
+      "120",
+      "--out",
+      output,
+    ]);
+    assert.equal(rendered.status, 0, rendered.stderr);
+    const report = JSON.parse(rendered.stdout);
+    assert.ok(report.stats.luminance.max > 0.2);
+    assert.equal(report.isolation.lightsPreserved, 1);
+    assert.equal(report.context.contextRenderableCount, 0);
+    assert.equal(report.context.environmentPresent, false);
+    assert.equal(report.context.empty, true);
+    assert.ok(report.quality.targetProjectedPixelSize.height > 0);
+    assert.ok(report.quality.targetProjectedPixelSize.width > 0);
+    assert.match(report.warnings.join("\n"), EMPTY_CONTEXT_WARNING);
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("accepts --isolate as a composable no-op alias on scout", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-scout-isolate-"));
+  try {
+    const result = runCli([
+      "scout",
+      advancedSceneEntry,
+      "semantic-focus",
+      "--export",
+      "createConfiguredScene",
+      "--renderer",
+      "three",
+      "--isolate",
+      "--width",
+      "160",
+      "--height",
+      "120",
+      "--out",
+      directory,
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).success, true);
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("adds component and props guidance when a React render throws", () => {
+  const result = runCli([
+    "inspect",
+    nestedPropsEntry,
+    "--export",
+    "NestedPropsCard",
+    "--renderer",
+    "react",
+  ]);
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, NESTED_PROPS_COMPONENT);
+  assert.match(result.stderr, MENU_STAGE_ACCESS);
+  assert.match(result.stderr, PROPS_FLAG);
 });
 
 test("exposes stable instance IDs as frameable semantic targets", () => {
@@ -317,6 +487,8 @@ test("preserves the complete source camera when original framing is requested", 
     assert.equal(second.status, 0, second.stderr);
     const report = JSON.parse(first.stdout);
     assert.equal(report.camera.modified, false);
+    assert.match(report.quality.explanation, TARGET_WAS_LOCATED);
+    assert.match(report.quality.explanation, LITERAL_FIXTURE_CAMERA);
     assert.deepEqual(report.camera.source.position, [7, -11, 9]);
     assert.deepEqual(report.camera.resolved.position, [7, -11, 9]);
     assert.deepEqual(
@@ -324,6 +496,797 @@ test("preserves the complete source camera when original framing is requested", 
       report.camera.source.quaternion
     );
     assert.notDeepEqual(readFileSync(before), readFileSync(during));
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("compares a current render with an arbitrary prior PNG and localizes the change", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-compare-"));
+  const previous = join(directory, "previous.png");
+  const current = join(directory, "current.png");
+  const base = [
+    "render",
+    advancedSceneEntry,
+    "semantic-focus",
+    "--export",
+    "createConfiguredScene",
+    "--renderer",
+    "three",
+    "--props",
+    advancedProps,
+    "--action",
+    "select",
+    "--action-input",
+    actionInput,
+    "--framing",
+    "source",
+    "--width",
+    "320",
+    "--height",
+    "240",
+  ];
+
+  try {
+    const before = runCli([...base, "--time", "0", "--out", previous]);
+    assert.equal(before.status, 0, before.stderr);
+    const after = runCli([
+      ...base,
+      "--time",
+      "125",
+      "--compare",
+      previous,
+      "--out",
+      current,
+    ]);
+    assert.equal(after.status, 0, after.stderr);
+    const report = JSON.parse(after.stdout);
+    assert.equal(report.comparison.previous, previous);
+    assert.equal(report.comparison.classification, "changed");
+    assert.ok(report.comparison.changedPixelFraction > 0);
+    assert.ok(report.comparison.normalizedRasterDelta > 0);
+    assert.ok(report.comparison.changedBounds.width > 0);
+    assert.ok(report.comparison.changedBounds.height > 0);
+    assert.ok(existsSync(report.comparison.artifacts.sideBySide));
+    assert.ok(existsSync(report.comparison.artifacts.difference));
+    assert.deepEqual(pngSize(report.comparison.artifacts.difference), {
+      height: 240,
+      width: 320,
+    });
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("extracts target-mask silhouette evidence that distinguishes jagged from smooth contours", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-silhouette-"));
+  const smoothProps = join(directory, "smooth.json");
+  const jaggedProps = join(directory, "jagged.json");
+  writeFileSync(smoothProps, JSON.stringify({ jagged: false }));
+  writeFileSync(jaggedProps, JSON.stringify({ jagged: true }));
+  const render = (fixtureProps: string, name: string) =>
+    runCli([
+      "render",
+      silhouetteEntry,
+      "subject",
+      "--export",
+      "createScene",
+      "--renderer",
+      "three",
+      "--props",
+      fixtureProps,
+      "--framing",
+      "fit",
+      "--silhouette",
+      "--width",
+      "240",
+      "--height",
+      "240",
+      "--out",
+      join(directory, `${name}.png`),
+    ]);
+
+  try {
+    const smoothResult = render(smoothProps, "smooth");
+    const jaggedResult = render(jaggedProps, "jagged");
+    assert.equal(smoothResult.status, 0, smoothResult.stderr);
+    assert.equal(jaggedResult.status, 0, jaggedResult.stderr);
+    const smooth = JSON.parse(smoothResult.stdout).silhouette;
+    const jagged = JSON.parse(jaggedResult.stdout).silhouette;
+    assert.equal(smooth.available, true);
+    assert.equal(jagged.available, true);
+    assert.ok(existsSync(smooth.artifact));
+    assert.ok(existsSync(jagged.artifact));
+    assert.ok(smooth.areaPixels > 0);
+    assert.ok(jagged.areaPixels > 0);
+    assert.ok(
+      jagged.profile.highFrequencyDirectionReversals >
+        smooth.profile.highFrequencyDirectionReversals
+    );
+    assert.ok(jagged.compactness < smooth.compactness);
+    assert.ok(
+      jagged.profile.maximumDeviationFromLocalTrendPx >
+        smooth.profile.maximumDeviationFromLocalTrendPx
+    );
+    assert.match(jagged.caveat, MEASUREMENT_NOT_TASTE);
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("normalizes an automatic reference mask and reports paired subject evidence", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-reference-auto-"));
+  const fixtureProps = join(directory, "smooth.json");
+  const reference = join(directory, "reference.png");
+  const current = join(directory, "current.png");
+  writeFileSync(fixtureProps, JSON.stringify({ jagged: false }));
+  const base = [
+    "render",
+    silhouetteEntry,
+    "subject",
+    "--export",
+    "createScene",
+    "--renderer",
+    "three",
+    "--props",
+    fixtureProps,
+    "--framing",
+    "fit",
+    "--width",
+    "240",
+    "--height",
+    "240",
+  ];
+
+  try {
+    const referenceResult = runCli([...base, "--out", reference]);
+    assert.equal(referenceResult.status, 0, referenceResult.stderr);
+    const currentResult = runCli([
+      ...base,
+      "--reference",
+      reference,
+      "--probe",
+      "0.5,0.5",
+      "--out",
+      current,
+    ]);
+    assert.equal(currentResult.status, 0, currentResult.stderr);
+    const report = JSON.parse(currentResult.stdout).reference;
+    assert.equal(report.analysisAvailable, true);
+    assert.equal(report.mask.method, "automatic");
+    assert.ok(report.mask.confidence >= report.mask.minimumConfidence);
+    assert.equal(report.alignment.mode, "center-height-preserving-aspect");
+    assert.ok(report.alignment.scale > 0);
+    assert.deepEqual(Object.keys(report.composition).sort(), [
+      "current",
+      "delta",
+      "reference",
+    ]);
+    assert.ok(Math.abs(report.composition.delta.center[0]) < 0.01);
+    assert.ok(Math.abs(report.composition.delta.center[1]) < 0.01);
+    assert.ok(Math.abs(report.composition.delta.size[0]) < 0.01);
+    assert.ok(Math.abs(report.composition.delta.size[1]) < 0.01);
+    assert.ok(existsSync(report.artifacts.contactSheet));
+    assert.ok(existsSync(report.artifacts.difference));
+    assert.ok(existsSync(report.artifacts.silhouetteOverlay));
+    assert.deepEqual(pngSize(report.artifacts.contactSheet), {
+      height: 240,
+      width: 720,
+    });
+    assert.ok(report.silhouette.areaIoU > 0.9);
+    assert.ok(
+      Math.abs(
+        report.histograms.current.luminance.p50 -
+          report.histograms.reference.luminance.p50
+      ) < 0.02
+    );
+    assert.deepEqual(report.probes[0].normalized, [0.5, 0.5]);
+    assert.equal(report.probes[0].current.rgba.length, 4);
+    assert.equal(report.probes[0].reference.rgba.length, 4);
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("uses an explicit reference mask for auditable sculptural deltas", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-reference-mask-"));
+  const smoothProps = join(directory, "smooth.json");
+  const jaggedProps = join(directory, "jagged.json");
+  const reference = join(directory, "reference.png");
+  const current = join(directory, "current.png");
+  writeFileSync(smoothProps, JSON.stringify({ jagged: false }));
+  writeFileSync(jaggedProps, JSON.stringify({ jagged: true }));
+  const base = [
+    "render",
+    silhouetteEntry,
+    "subject",
+    "--export",
+    "createScene",
+    "--renderer",
+    "three",
+    "--framing",
+    "fit",
+    "--width",
+    "240",
+    "--height",
+    "240",
+  ];
+
+  try {
+    const referenceResult = runCli([
+      ...base,
+      "--props",
+      smoothProps,
+      "--silhouette",
+      "--out",
+      reference,
+    ]);
+    assert.equal(referenceResult.status, 0, referenceResult.stderr);
+    const referenceReport = JSON.parse(referenceResult.stdout);
+    const currentResult = runCli([
+      ...base,
+      "--props",
+      jaggedProps,
+      "--reference",
+      reference,
+      "--reference-mask",
+      referenceReport.silhouette.artifact,
+      "--probe",
+      "0.5,0.5",
+      "--out",
+      current,
+    ]);
+    assert.equal(currentResult.status, 0, currentResult.stderr);
+    const report = JSON.parse(currentResult.stdout).reference;
+    assert.equal(report.analysisAvailable, true);
+    assert.equal(report.mask.method, "explicit-mask");
+    assert.equal(report.mask.confidence, 1);
+    assert.ok(report.silhouette.areaIoU < 0.9);
+    assert.equal(Number.isFinite(report.silhouette.aspectRatio.current), true);
+    assert.equal(
+      Number.isFinite(report.silhouette.aspectRatio.reference),
+      true
+    );
+    assert.ok(
+      Math.abs(
+        report.silhouette.aspectRatio.delta -
+          (report.silhouette.aspectRatio.current -
+            report.silhouette.aspectRatio.reference)
+      ) < Number.EPSILON
+    );
+    assert.equal(
+      report.silhouette.tipConvergenceAngle.algorithm,
+      "outer-envelope-upper-third-linear-fit"
+    );
+    assert.ok(report.probes[0].current.similarColorRun.horizontalPx > 0);
+    assert.ok(report.probes[0].reference.similarColorRun.horizontalPx > 0);
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("evaluates a labeled multi-view reference set without conflating perspectives", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-reference-set-"));
+  const fixtureProps = join(directory, "smooth.json");
+  const hero = join(directory, "hero.png");
+  const manifest = join(directory, "references.json");
+  writeFileSync(fixtureProps, JSON.stringify({ jagged: false }));
+  const base = [
+    "render",
+    silhouetteEntry,
+    "subject",
+    "--export",
+    "createScene",
+    "--renderer",
+    "three",
+    "--props",
+    fixtureProps,
+    "--framing",
+    "fit",
+    "--silhouette",
+    "--width",
+    "240",
+    "--height",
+    "240",
+  ];
+
+  try {
+    const heroResult = runCli([...base, "--out", hero]);
+    assert.equal(heroResult.status, 0, heroResult.stderr);
+    const heroReport = JSON.parse(heroResult.stdout);
+    writeFileSync(
+      manifest,
+      JSON.stringify({
+        references: [
+          {
+            label: "hero",
+            maskPath: heroReport.silhouette.artifact,
+            path: hero,
+            view: "original",
+          },
+          {
+            label: "front",
+            maskPath: heroReport.silhouette.artifact,
+            path: hero,
+            view: "front",
+          },
+        ],
+      })
+    );
+    const result = runCli([
+      "render",
+      silhouetteEntry,
+      "subject",
+      "--export",
+      "createScene",
+      "--renderer",
+      "three",
+      "--props",
+      fixtureProps,
+      "--reference-set",
+      manifest,
+      "--width",
+      "240",
+      "--height",
+      "240",
+      "--out",
+      join(directory, "evidence"),
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.command, "render-reference-set");
+    assert.deepEqual(
+      report.views.map((view: { label: string }) => view.label),
+      ["hero", "front"]
+    );
+    assert.ok(
+      report.views.every(
+        (view: { reference: { analysisAvailable: boolean } }) =>
+          view.reference.analysisAvailable
+      )
+    );
+    assert.ok(
+      report.views.every(
+        (view: { reference: { silhouette: { areaIoU: number } } }) =>
+          view.reference.silhouette.areaIoU > 0.9
+      )
+    );
+    assert.equal(report.lifecycle.sceneInstances, 2);
+    assert.equal(report.lifecycle.browserLaunches, 1);
+    assert.equal(report.lifecycle.bundles, 1);
+    assert.equal(report.aggregate.analyzedViews, 2);
+    assert.equal(report.success, true);
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+}, 60_000);
+
+test("refuses numeric reference claims when automatic subject confidence is low", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-reference-low-"));
+  const fixtureProps = join(directory, "smooth.json");
+  const reference = join(directory, "uniform.png");
+  const current = join(directory, "current.png");
+  writeFileSync(fixtureProps, JSON.stringify({ jagged: false }));
+  writeFileSync(
+    reference,
+    Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      "base64"
+    )
+  );
+
+  try {
+    const result = runCli([
+      "render",
+      silhouetteEntry,
+      "subject",
+      "--export",
+      "createScene",
+      "--renderer",
+      "three",
+      "--props",
+      fixtureProps,
+      "--framing",
+      "fit",
+      "--reference",
+      reference,
+      "--width",
+      "240",
+      "--height",
+      "240",
+      "--out",
+      current,
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+    const fullReport = JSON.parse(result.stdout);
+    assert.equal(fullReport.reference.analysisAvailable, false);
+    assert.ok(
+      fullReport.reference.mask.confidence <
+        fullReport.reference.mask.minimumConfidence
+    );
+    assert.equal(fullReport.reference.histograms, undefined);
+    assert.equal(fullReport.reference.silhouette, undefined);
+    assert.ok(existsSync(fullReport.reference.artifacts.contactSheet));
+    assert.match(fullReport.warnings.join("\n"), REFERENCE_CONFIDENCE_WARNING);
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("withholds automatic reference metrics when disconnected subjects compete", () => {
+  const directory = mkdtempSync(
+    join(tmpdir(), "sceneproof-reference-ambiguous-")
+  );
+  const reference = join(directory, "reference.png");
+  const current = join(directory, "current.png");
+  const base = [
+    "render",
+    ambiguousReferenceEntry,
+    "subject",
+    "--export",
+    "createScene",
+    "--renderer",
+    "three",
+    "--framing",
+    "fit",
+    "--width",
+    "240",
+    "--height",
+    "240",
+  ];
+
+  try {
+    const referenceResult = runCli([...base, "--out", reference]);
+    assert.equal(referenceResult.status, 0, referenceResult.stderr);
+    const result = runCli([
+      ...base,
+      "--reference",
+      reference,
+      "--out",
+      current,
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(result.stdout).reference;
+    assert.equal(report.analysisAvailable, false);
+    assert.ok(report.mask.confidence < report.mask.minimumConfidence);
+    assert.match(report.mask.reason, COMPETING_REFERENCE_COMPONENTS);
+    const regionResult = runCli([
+      ...base,
+      "--reference",
+      reference,
+      "--reference-region",
+      "10,10,220,220",
+      "--out",
+      join(directory, "region-current.png"),
+    ]);
+    assert.equal(regionResult.status, 0, regionResult.stderr);
+    const regionReport = JSON.parse(regionResult.stdout).reference;
+    assert.equal(regionReport.analysisAvailable, true);
+    assert.equal(regionReport.mask.method, "automatic-region");
+    assert.ok(
+      regionReport.mask.confidence >= regionReport.mask.minimumConfidence
+    );
+    assert.ok(regionReport.silhouette.areaIoU > 0.9);
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("rejects dependent reference options instead of silently ignoring them", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-reference-input-"));
+  const fixtureProps = join(directory, "smooth.json");
+  writeFileSync(fixtureProps, JSON.stringify({ jagged: false }));
+
+  try {
+    const result = runCli([
+      "render",
+      silhouetteEntry,
+      "subject",
+      "--export",
+      "createScene",
+      "--renderer",
+      "three",
+      "--props",
+      fixtureProps,
+      "--reference-mask",
+      join(directory, "mask.png"),
+      "--out",
+      join(directory, "current.png"),
+    ]);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, REFERENCE_OPTION_DEPENDENCY);
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("rejects a reference mask whose dimensions do not match its image", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-reference-size-"));
+  const fixtureProps = join(directory, "smooth.json");
+  const reference = join(directory, "reference.png");
+  const wrongMask = join(directory, "wrong-mask.png");
+  writeFileSync(fixtureProps, JSON.stringify({ jagged: false }));
+  writeFileSync(
+    wrongMask,
+    Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      "base64"
+    )
+  );
+  const base = [
+    "render",
+    silhouetteEntry,
+    "subject",
+    "--export",
+    "createScene",
+    "--renderer",
+    "three",
+    "--props",
+    fixtureProps,
+    "--framing",
+    "fit",
+    "--width",
+    "240",
+    "--height",
+    "240",
+  ];
+
+  try {
+    const referenceResult = runCli([...base, "--out", reference]);
+    assert.equal(referenceResult.status, 0, referenceResult.stderr);
+    const result = runCli([
+      ...base,
+      "--reference",
+      reference,
+      "--reference-mask",
+      wrongMask,
+      "--out",
+      join(directory, "current.png"),
+    ]);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, REFERENCE_MASK_DIMENSIONS);
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("renders a one-variable prop sweep as labeled attributable evidence", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-sweep-"));
+  const fixtureProps = join(directory, "base.json");
+  const contactSheet = join(directory, "sweep.png");
+  writeFileSync(fixtureProps, JSON.stringify({ jagged: false }));
+
+  try {
+    const result = runCli([
+      "render",
+      silhouetteEntry,
+      "subject",
+      "--export",
+      "createScene",
+      "--renderer",
+      "three",
+      "--props",
+      fixtureProps,
+      "--framing",
+      "fit",
+      "--sweep",
+      "jagged=false,true",
+      "--width",
+      "240",
+      "--height",
+      "240",
+      "--out",
+      contactSheet,
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.command, "render-sweep");
+    assert.equal(report.sweep.path, "jagged");
+    assert.deepEqual(report.sweep.values, [false, true]);
+    assert.equal(report.variants.length, 2);
+    assert.deepEqual(
+      report.variants.map((variant: { label: string }) => variant.label),
+      ["jagged=false", "jagged=true"]
+    );
+    assert.ok(
+      report.variants.every((variant: { artifact: string }) =>
+        existsSync(variant.artifact)
+      )
+    );
+    assert.equal(report.comparisons[0].classification, "changed");
+    assert.ok(report.comparisons[0].changedPixelFraction > 0);
+    assert.deepEqual(pngSize(report.artifacts.contactSheet), {
+      height: 268,
+      width: 480,
+    });
+    assert.equal(report.lifecycle.sceneInstances, 2);
+    assert.equal(report.lifecycle.browserLaunches, 1);
+    assert.equal(report.lifecycle.bundles, 1);
+    assert.equal(report.success, true);
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("ranks reference-aware sweep variants from paired silhouette and luminance evidence", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-reference-sweep-"));
+  const fixtureProps = join(directory, "base.json");
+  const reference = join(directory, "reference.png");
+  writeFileSync(fixtureProps, JSON.stringify({ jagged: false }));
+
+  try {
+    const referenceResult = runCli([
+      "render",
+      silhouetteEntry,
+      "subject",
+      "--export",
+      "createScene",
+      "--renderer",
+      "three",
+      "--props",
+      fixtureProps,
+      "--framing",
+      "fit",
+      "--silhouette",
+      "--width",
+      "240",
+      "--height",
+      "240",
+      "--out",
+      reference,
+    ]);
+    assert.equal(referenceResult.status, 0, referenceResult.stderr);
+    const referenceReport = JSON.parse(referenceResult.stdout);
+
+    const result = runCli([
+      "render",
+      silhouetteEntry,
+      "subject",
+      "--export",
+      "createScene",
+      "--renderer",
+      "three",
+      "--props",
+      fixtureProps,
+      "--framing",
+      "fit",
+      "--sweep",
+      "jagged=false,true",
+      "--reference",
+      reference,
+      "--reference-mask",
+      referenceReport.silhouette.artifact,
+      "--width",
+      "240",
+      "--height",
+      "240",
+      "--out",
+      join(directory, "sweep.png"),
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.variants.length, 2);
+    assert.ok(
+      report.variants.every(
+        (variant: { reference?: { analysisAvailable: boolean } }) =>
+          variant.reference?.analysisAvailable === true
+      )
+    );
+    assert.ok(
+      report.variants[0].referenceFit.score >
+        report.variants[1].referenceFit.score
+    );
+    assert.equal(report.recommendation.index, 0);
+    assert.equal(report.recommendation.label, "jagged=false");
+    assert.equal(report.recommendation.basis, "highest-reference-fit");
+    assert.match(report.recommendation.caveat, NOT_A_TASTE_VERDICT);
+    assert.equal(report.lifecycle.sceneInstances, 2);
+    assert.equal(report.lifecycle.browserLaunches, 1);
+    assert.equal(report.lifecycle.bundles, 1);
+    assert.equal(report.success, true);
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("scores reference-aware sweeps against an explicit evidence objective", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-sweep-objective-"));
+  const referenceProps = join(directory, "reference.json");
+  const baseProps = join(directory, "base.json");
+  const reference = join(directory, "reference.png");
+  writeFileSync(
+    referenceProps,
+    JSON.stringify({ brightness: 1, jagged: false })
+  );
+  writeFileSync(baseProps, JSON.stringify({ brightness: 0.3, jagged: false }));
+
+  try {
+    const base = [
+      "render",
+      silhouetteEntry,
+      "subject",
+      "--export",
+      "createScene",
+      "--renderer",
+      "three",
+      "--framing",
+      "fit",
+      "--width",
+      "240",
+      "--height",
+      "240",
+    ];
+    const referenceResult = runCli([
+      ...base,
+      "--props",
+      referenceProps,
+      "--silhouette",
+      "--out",
+      reference,
+    ]);
+    assert.equal(referenceResult.status, 0, referenceResult.stderr);
+    const referenceReport = JSON.parse(referenceResult.stdout);
+    const result = runCli([
+      ...base,
+      "--props",
+      baseProps,
+      "--reference",
+      reference,
+      "--reference-mask",
+      referenceReport.silhouette.artifact,
+      "--sweep",
+      "brightness=0.3,1",
+      "--sweep-objective",
+      "appearance",
+      "--out",
+      join(directory, "sweep.png"),
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.sweep.objective, "appearance");
+    assert.equal(report.recommendation.value, 1);
+    assert.equal(report.variants[1].referenceFit.objective, "appearance");
+    assert.ok(
+      report.variants[1].referenceFit.score >
+        report.variants[0].referenceFit.score
+    );
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("marks an ignored sweep prop as a no-op instead of useful evidence", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-sweep-noop-"));
+  const fixtureProps = join(directory, "base.json");
+  writeFileSync(fixtureProps, JSON.stringify({ jagged: false }));
+
+  try {
+    const result = runCli([
+      "render",
+      silhouetteEntry,
+      "subject",
+      "--export",
+      "createScene",
+      "--renderer",
+      "three",
+      "--props",
+      fixtureProps,
+      "--framing",
+      "fit",
+      "--sweep",
+      "unused=1,2",
+      "--width",
+      "240",
+      "--height",
+      "240",
+      "--out",
+      join(directory, "sweep.png"),
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.comparisons[0].classification, "identical");
+    assert.equal(report.success, false);
+    assert.match(report.warnings.join("\n"), SWEEP_NO_VISUAL_CHANGE);
   } finally {
     rmSync(directory, { force: true, recursive: true });
   }
@@ -418,12 +1381,118 @@ test("captures deterministic transition frames in one scene lifecycle", () => {
       sceneInstances: 1,
     });
     assert.equal(report.frames.length, 4);
+    assert.equal(report.comparisons.length, 3);
+    assert.equal(report.quality.motionDetected, true);
+    assert.ok(report.action.mutatedObjectCount >= 1);
+    assert.ok(
+      report.comparisons.some(
+        (comparison: { classification: string }) =>
+          comparison.classification === "changed"
+      )
+    );
     for (const frame of report.frames) {
       assert.ok(existsSync(frame.artifact));
       assert.ok(statSync(frame.artifact).size > 100);
     }
     assert.ok(existsSync(report.artifacts.contactSheet));
     assert.ok(existsSync(report.artifacts.manifest));
+    assert.equal(report.rasterizer.kind, "swiftshader-cpu");
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("fails an action sequence that contains no transition and explains the null result", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-static-frames-"));
+  const contactSheet = join(directory, "transition.png");
+
+  try {
+    const result = runCli([
+      "render",
+      staticActionEntry,
+      "subject",
+      "--export",
+      "createScene",
+      "--renderer",
+      "three",
+      "--action",
+      "select",
+      "--frames",
+      "before,0,settled",
+      "--framing",
+      "fit",
+      "--width",
+      "160",
+      "--height",
+      "120",
+      "--out",
+      contactSheet,
+    ]);
+
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.success, false);
+    assert.equal(report.quality.motionDetected, false);
+    assert.equal(report.action.mutatedObjectCount, 0);
+    assert.ok(
+      report.comparisons.every(
+        (comparison: {
+          changedPixelFraction: number;
+          classification: string;
+          normalizedRasterDelta: number;
+        }) =>
+          comparison.classification === "identical" &&
+          comparison.changedPixelFraction === 0 &&
+          comparison.normalizedRasterDelta === 0
+      )
+    );
+    assert.match(report.warnings.join("\n"), NO_VISUAL_TRANSITION);
+    assert.match(report.warnings.join("\n"), ZERO_SCENE_OBJECT_MUTATIONS);
+    assert.equal(report.artifacts.contactSheet, contactSheet);
+    assert.notEqual(report.artifacts.directory, contactSheet);
+    assert.ok(report.artifacts.directory.endsWith("transition-frames"));
+    assert.ok(existsSync(contactSheet));
+    assert.ok(existsSync(report.artifacts.manifest));
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("marks a flat target surface unjudgeable while preserving its silhouette evidence", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-flat-surface-"));
+  const output = join(directory, "flat.png");
+  try {
+    const result = runCli([
+      "render",
+      staticActionEntry,
+      "subject",
+      "--export",
+      "createScene",
+      "--renderer",
+      "three",
+      "--framing",
+      "fit",
+      "--stats",
+      "--width",
+      "160",
+      "--height",
+      "120",
+      "--out",
+      output,
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.quality.judgeable, true);
+    assert.equal(report.quality.surfaceJudgeable, false);
+    assert.ok(
+      report.quality.surfaceLuminanceSpread <
+        report.quality.surfaceLuminanceThreshold
+    );
+    assert.equal(
+      report.stats.luminance.p10 <= report.stats.luminance.p50,
+      true
+    );
+    assert.match(report.warnings.join("\n"), SURFACE_RANGE_WARNING);
   } finally {
     rmSync(directory, { force: true, recursive: true });
   }
@@ -438,6 +1507,7 @@ test("doctor reports Chromium and WebGL readiness with actionable execution guid
   assert.equal(report.checks.chromiumFound, true);
   assert.equal(report.checks.browserLaunched, true);
   assert.equal(report.checks.webglAvailable, true);
+  assert.equal(report.rasterizer.kind, "swiftshader-cpu");
   assert.match(report.executionGuidance, DIRECT_COMMAND_GUIDANCE);
   assert.match(report.executionGuidance, LOCAL_RENDER_GUIDANCE);
 });
@@ -692,6 +1762,7 @@ test("render-region rebuilds a Three.js camera patch instead of cropping an old 
       "80,60,160,120",
       "--scale",
       "4",
+      "--stats",
       "--out",
       output,
     ]);
@@ -709,6 +1780,9 @@ test("render-region rebuilds a Three.js camera patch instead of cropping an old 
     assert.deepEqual(pngSize(output), report.renderedSize);
     assert.equal(report.checks.regionValid, true);
     assert.equal(report.checks.requestedScaleAchieved, true);
+    assert.equal(report.rasterizer.kind, "swiftshader-cpu");
+    assert.ok(report.stats.coverageFraction > 0);
+    assert.ok(report.stats.luminance.p99 >= report.stats.luminance.p90);
   } finally {
     rmSync(directory, { force: true, recursive: true });
   }
@@ -735,6 +1809,7 @@ test("render gives an agent explicit target perspective and camera zoom controls
       "3",
       "--scale",
       "2",
+      "--stats",
       "--out",
       output,
     ]);
@@ -747,6 +1822,11 @@ test("render gives an agent explicit target perspective and camera zoom controls
     assert.equal(report.camera.elevation, 18);
     assert.equal(report.camera.azimuth, -90);
     assert.equal(report.renderedSize.width, 640);
+    assert.equal(report.rasterizer.kind, "swiftshader-cpu");
+    assert.equal(report.quality.judgeable, true);
+    assert.equal(report.quality.limitingFactor, null);
+    assert.ok(report.stats.coverageFraction > 0);
+    assert.ok(report.stats.luminance.max > report.stats.background.luminance);
     assert.deepEqual(pngSize(output), report.renderedSize);
   } finally {
     rmSync(directory, { force: true, recursive: true });
@@ -901,6 +1981,34 @@ test("scout keeps structural invisibility visible instead of recommending brute-
       )
     );
     assert.match(report.recommended.reason.join("\n"), STRUCTURAL_REASON);
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("scout identifies a framed dark target as contrast-limited instead of framing-limited", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-dark-scout-"));
+  try {
+    const result = runCli([
+      "scout",
+      darkContrastEntry,
+      "subject",
+      "--export",
+      "createScene",
+      "--renderer",
+      "three",
+      "--width",
+      "160",
+      "--height",
+      "120",
+      "--out",
+      directory,
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.diagnosis.limitingFactor, "contrast");
+    assert.equal(report.diagnosis.higherScaleWouldHelp, false);
+    assert.equal(report.rasterizer.kind, "swiftshader-cpu");
   } finally {
     rmSync(directory, { force: true, recursive: true });
   }

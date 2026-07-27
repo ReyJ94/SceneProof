@@ -1,12 +1,16 @@
-import { mkdir, stat, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { basename, dirname, extname, join, resolve } from "node:path";
 
 import { launchBrowser, mountBundle } from "./browser-runtime.js";
+import { compareRenderToReference } from "./reference-comparison.js";
 import {
   type FrameRenderReport,
   type LogicalRegion,
+  type RasterizerInfo,
+  type RasterStats,
   type RegionRenderReport,
   type RenderReport,
+  resolveSceneNodeId,
   type SceneArtifact,
   SceneArtifactSchema,
   type ScoutCandidate,
@@ -32,6 +36,7 @@ type ThreeOptions = {
   scale?: number;
   isolate?: boolean;
   background?: string;
+  compare?: string;
   out?: string;
   nodeId?: string;
   view?: ThreeTargetView;
@@ -41,8 +46,322 @@ type ThreeOptions = {
   framing?: ThreeFraming;
   margin?: number;
   props: Record<string, unknown>;
+  preparedPage?: import("playwright-core").Page;
+  reference?: {
+    maskPath?: string;
+    path: string;
+    probes: [number, number][];
+    region?: LogicalRegion;
+  };
   timeMs?: number;
+  silhouette?: boolean;
+  stats?: boolean;
 };
+
+type PixelRect = {
+  height: number;
+  width: number;
+  x: number;
+  y: number;
+};
+
+const SURFACE_LUMINANCE_SPREAD_THRESHOLD = 0.08;
+const SILHOUETTE_CAVEAT =
+  "This is a geometric measurement, not a taste verdict; interpret it at the intended delivery scale and against relevant scene context.";
+
+async function compareCanvasWithPng(
+  page: import("playwright-core").Page,
+  selector: string,
+  previousPath: string,
+  currentOutput: string
+): Promise<NonNullable<RenderReport["comparison"]>> {
+  const previousBytes = await readFile(previousPath);
+  const previousDataUrl = `data:image/png;base64,${previousBytes.toString("base64")}`;
+  const compared = await page.evaluate(
+    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: One browser-local comparison pass validates dimensions, measures raster change, localizes it, and emits the two evidence panels.
+    async ({ canvasSelector, previousSource }) => {
+      const current = document.querySelector(canvasSelector);
+      if (!(current instanceof HTMLCanvasElement)) {
+        throw new Error(`Comparison canvas not found: ${canvasSelector}`);
+      }
+      const previous = new Image();
+      previous.src = previousSource;
+      await previous.decode();
+      if (
+        previous.naturalWidth !== current.width ||
+        previous.naturalHeight !== current.height
+      ) {
+        throw new Error(
+          `Comparison dimensions differ: previous ${previous.naturalWidth}x${previous.naturalHeight}, current ${current.width}x${current.height}.`
+        );
+      }
+      const readCanvas = document.createElement("canvas");
+      readCanvas.width = current.width;
+      readCanvas.height = current.height;
+      const readContext = readCanvas.getContext("2d", {
+        willReadFrequently: true,
+      });
+      if (!readContext) {
+        throw new Error("A 2D canvas is required for render comparison.");
+      }
+      readContext.drawImage(previous, 0, 0);
+      const previousPixels = readContext.getImageData(
+        0,
+        0,
+        current.width,
+        current.height
+      ).data;
+      readContext.clearRect(0, 0, current.width, current.height);
+      readContext.drawImage(current, 0, 0);
+      const currentPixels = readContext.getImageData(
+        0,
+        0,
+        current.width,
+        current.height
+      ).data;
+      const difference = document.createElement("canvas");
+      difference.width = current.width;
+      difference.height = current.height;
+      const differenceContext = difference.getContext("2d");
+      if (!differenceContext) {
+        throw new Error("A 2D canvas is required for difference evidence.");
+      }
+      const differenceImage = differenceContext.createImageData(
+        current.width,
+        current.height
+      );
+      let absoluteDelta = 0;
+      let changedPixels = 0;
+      let maximumX = -1;
+      let maximumY = -1;
+      let minimumX = current.width;
+      let minimumY = current.height;
+      for (let offset = 0; offset < currentPixels.length; offset += 4) {
+        const redDelta = Math.abs(
+          (currentPixels[offset] ?? 0) - (previousPixels[offset] ?? 0)
+        );
+        const greenDelta = Math.abs(
+          (currentPixels[offset + 1] ?? 0) - (previousPixels[offset + 1] ?? 0)
+        );
+        const blueDelta = Math.abs(
+          (currentPixels[offset + 2] ?? 0) - (previousPixels[offset + 2] ?? 0)
+        );
+        absoluteDelta += redDelta + greenDelta + blueDelta;
+        differenceImage.data[offset] = Math.min(255, redDelta * 4);
+        differenceImage.data[offset + 1] = Math.min(255, greenDelta * 4);
+        differenceImage.data[offset + 2] = Math.min(255, blueDelta * 4);
+        differenceImage.data[offset + 3] = 255;
+        if (Math.max(redDelta, greenDelta, blueDelta) > 2) {
+          changedPixels += 1;
+          const pixelIndex = offset / 4;
+          const x = pixelIndex % current.width;
+          const y = Math.floor(pixelIndex / current.width);
+          minimumX = Math.min(minimumX, x);
+          minimumY = Math.min(minimumY, y);
+          maximumX = Math.max(maximumX, x);
+          maximumY = Math.max(maximumY, y);
+        }
+      }
+      differenceContext.putImageData(differenceImage, 0, 0);
+      const sideBySide = document.createElement("canvas");
+      sideBySide.width = current.width * 2;
+      sideBySide.height = current.height;
+      const sideContext = sideBySide.getContext("2d");
+      if (!sideContext) {
+        throw new Error("A 2D canvas is required for comparison evidence.");
+      }
+      sideContext.drawImage(previous, 0, 0);
+      sideContext.drawImage(current, current.width, 0);
+      const pixelCount = Math.max(1, current.width * current.height);
+      const normalizedRasterDelta = absoluteDelta / (pixelCount * 3 * 255);
+      const changedPixelFraction = changedPixels / pixelCount;
+      let classification: "below-perceptual-floor" | "changed" | "identical" =
+        "changed";
+      if (absoluteDelta === 0) {
+        classification = "identical";
+      } else if (
+        normalizedRasterDelta < 0.001 &&
+        changedPixelFraction < 0.005
+      ) {
+        classification = "below-perceptual-floor";
+      }
+      return {
+        changedBounds:
+          changedPixels === 0
+            ? null
+            : {
+                height: maximumY - minimumY + 1,
+                width: maximumX - minimumX + 1,
+                x: minimumX,
+                y: minimumY,
+              },
+        changedPixelFraction,
+        classification,
+        differenceDataUrl: difference.toDataURL("image/png"),
+        normalizedRasterDelta,
+        sideBySideDataUrl: sideBySide.toDataURL("image/png"),
+      };
+    },
+    { canvasSelector: selector, previousSource: previousDataUrl }
+  );
+  const extension = extname(currentOutput);
+  const stem = extension
+    ? currentOutput.slice(
+        0,
+        Math.max(0, currentOutput.length - extension.length)
+      )
+    : currentOutput;
+  const difference = `${stem}-difference.png`;
+  const sideBySide = `${stem}-compare.png`;
+  const decodeDataUrl = (value: string): Uint8Array =>
+    Buffer.from(value.slice(value.indexOf(",") + 1), "base64");
+  await Promise.all([
+    writeFile(difference, decodeDataUrl(compared.differenceDataUrl)),
+    writeFile(sideBySide, decodeDataUrl(compared.sideBySideDataUrl)),
+  ]);
+  return {
+    artifacts: { difference, sideBySide },
+    changedBounds: compared.changedBounds,
+    changedPixelFraction: compared.changedPixelFraction,
+    classification: compared.classification,
+    normalizedRasterDelta: compared.normalizedRasterDelta,
+    previous: previousPath,
+  };
+}
+
+function rasterizerInfo(renderer: string | null): RasterizerInfo {
+  return {
+    kind:
+      renderer?.toLowerCase().includes("swiftshader") === true
+        ? "swiftshader-cpu"
+        : "hardware-or-unknown",
+    renderer,
+  };
+}
+
+function analyzeCanvasRaster(
+  page: import("playwright-core").Page,
+  selector: string,
+  sampleRect?: PixelRect
+): Promise<
+  RasterStats & {
+    sampleCoverageFraction: number;
+    sampleLuminance: { p10: number; p90: number };
+  }
+> {
+  return page.evaluate(
+    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: One browser-local pixel pass owns dominant background, signal coverage, sample coverage, and luminance percentiles.
+    ({ canvasSelector, rect }) => {
+      const source = document.querySelector(canvasSelector);
+      if (!(source instanceof HTMLCanvasElement)) {
+        throw new Error(`Raster analysis canvas not found: ${canvasSelector}`);
+      }
+      const copy = document.createElement("canvas");
+      copy.height = source.height;
+      copy.width = source.width;
+      const context = copy.getContext("2d", { willReadFrequently: true });
+      if (!context) {
+        throw new Error("A 2D canvas is required for raster analysis.");
+      }
+      context.drawImage(source, 0, 0);
+      const pixels = context.getImageData(0, 0, copy.width, copy.height).data;
+      const colors = new Map<string, number>();
+      for (let offset = 0; offset < pixels.length; offset += 4) {
+        const key = `${pixels[offset] ?? 0},${pixels[offset + 1] ?? 0},${pixels[offset + 2] ?? 0},${pixels[offset + 3] ?? 0}`;
+        colors.set(key, (colors.get(key) ?? 0) + 1);
+      }
+      const [dominant] = [...colors.entries()].sort(
+        (left, right) => right[1] - left[1]
+      );
+      const background = (dominant?.[0] ?? "0,0,0,0")
+        .split(",")
+        .map(Number) as [number, number, number, number];
+      const luminance = (red: number, green: number, blue: number): number =>
+        (red * 0.2126 + green * 0.7152 + blue * 0.0722) / 255;
+      const signalLuminances: number[] = [];
+      const sampleLuminances: number[] = [];
+      let samplePixels = 0;
+      let sampleSignalPixels = 0;
+      const sampleLeft = Math.max(0, Math.floor(rect?.x ?? 0));
+      const sampleTop = Math.max(0, Math.floor(rect?.y ?? 0));
+      const sampleRight = Math.min(
+        copy.width,
+        Math.ceil((rect?.x ?? 0) + (rect?.width ?? copy.width))
+      );
+      const sampleBottom = Math.min(
+        copy.height,
+        Math.ceil((rect?.y ?? 0) + (rect?.height ?? copy.height))
+      );
+      for (let offset = 0; offset < pixels.length; offset += 4) {
+        const red = pixels[offset] ?? 0;
+        const green = pixels[offset + 1] ?? 0;
+        const blue = pixels[offset + 2] ?? 0;
+        const alpha = pixels[offset + 3] ?? 0;
+        const distance = Math.hypot(
+          red - background[0],
+          green - background[1],
+          blue - background[2],
+          (alpha - background[3]) * 0.5
+        );
+        const isSignal = distance > 4;
+        if (isSignal) {
+          signalLuminances.push(luminance(red, green, blue));
+        }
+        const pixelIndex = offset / 4;
+        const x = pixelIndex % copy.width;
+        const y = Math.floor(pixelIndex / copy.width);
+        if (
+          x >= sampleLeft &&
+          x < sampleRight &&
+          y >= sampleTop &&
+          y < sampleBottom
+        ) {
+          samplePixels += 1;
+          if (isSignal) {
+            sampleSignalPixels += 1;
+            sampleLuminances.push(luminance(red, green, blue));
+          }
+        }
+      }
+      signalLuminances.sort((left, right) => left - right);
+      sampleLuminances.sort((left, right) => left - right);
+      const percentile = (
+        values: readonly number[],
+        fraction: number
+      ): number => {
+        if (values.length === 0) {
+          return 0;
+        }
+        const index = Math.min(
+          values.length - 1,
+          Math.floor((values.length - 1) * fraction)
+        );
+        return values[index] ?? 0;
+      };
+      const pixelCount = Math.max(1, copy.width * copy.height);
+      return {
+        background: {
+          color: background,
+          luminance: luminance(background[0], background[1], background[2]),
+        },
+        coverageFraction: signalLuminances.length / pixelCount,
+        luminance: {
+          max: signalLuminances.at(-1) ?? 0,
+          p10: percentile(signalLuminances, 0.1),
+          p50: percentile(signalLuminances, 0.5),
+          p90: percentile(signalLuminances, 0.9),
+          p99: percentile(signalLuminances, 0.99),
+        },
+        sampleCoverageFraction: sampleSignalPixels / Math.max(1, samplePixels),
+        sampleLuminance: {
+          p10: percentile(sampleLuminances, 0.1),
+          p90: percentile(sampleLuminances, 0.9),
+        },
+      };
+    },
+    { canvasSelector: selector, rect: sampleRect ?? null }
+  );
+}
 
 export type ThreeTargetView = {
   azimuth: number;
@@ -530,6 +849,50 @@ async function extractThreeScene(
         }
         return snapshot;
       };
+      const lightSnapshot = (object: import("three").Object3D) => {
+        if (Reflect.get(object, "isLight") !== true) {
+          return;
+        }
+        const light = object as import("three").Light;
+        const worldPosition = light.getWorldPosition(new THREE.Vector3());
+        const snapshot: Record<string, unknown> = {
+          color: `#${light.color.getHexString()}`,
+          intensity: light.intensity,
+          position: vector(worldPosition),
+          type: light.type,
+        };
+        const target = Reflect.get(light, "target") as
+          | import("three").Object3D
+          | undefined;
+        if (target) {
+          const targetPosition = target.getWorldPosition(new THREE.Vector3());
+          snapshot.target = vector(targetPosition);
+          snapshot.direction = vector(
+            targetPosition.clone().sub(worldPosition).normalize()
+          );
+        }
+        const groundColor = Reflect.get(light, "groundColor") as
+          | import("three").Color
+          | undefined;
+        if (groundColor) {
+          snapshot.groundColor = `#${groundColor.getHexString()}`;
+        }
+        for (const property of [
+          "angle",
+          "decay",
+          "distance",
+          "penumbra",
+          "power",
+          "width",
+          "height",
+        ] as const) {
+          const value = Reflect.get(light, property);
+          if (typeof value === "number") {
+            snapshot[property] = value;
+          }
+        }
+        return snapshot;
+      };
       const boundsSnapshot = (object: import("three").Object3D) => {
         const box = new THREE.Box3().setFromObject(object);
         if (!(finiteVector(box.min) && finiteVector(box.max))) {
@@ -579,6 +942,10 @@ async function extractThreeScene(
         if (material) {
           node.material = material;
         }
+        const light = lightSnapshot(object);
+        if (light) {
+          node.light = light;
+        }
         return node;
       };
       const nodes: Array<
@@ -605,10 +972,7 @@ async function extractThreeScene(
         }
         return [];
       });
-      const rootId = ids.get(result.scene);
-      if (!rootId) {
-        throw new Error("Three.js scene identity is missing.");
-      }
+      const rootId = ids.get(result.scene) as string;
       const targetDescriptors = new Map<
         string,
         {
@@ -732,6 +1096,15 @@ async function extractThreeScene(
         ) {
           isolation = "objects";
         }
+        const uniqueMemberObjects = [
+          ...new Set(descriptor.members.map((member) => member.object)),
+        ];
+        const soleMember =
+          uniqueMemberObjects.length === 1 ? uniqueMemberObjects[0] : undefined;
+        const drawOwnerId = soleMember ? ids.get(soleMember) : undefined;
+        const drawOwner = drawOwnerId
+          ? nodes.find((node) => node.id === drawOwnerId)
+          : undefined;
         nodes.push({
           bounds: {
             worldBox: {
@@ -752,6 +1125,23 @@ async function extractThreeScene(
             memberCount: descriptor.members.length,
             source: descriptor.source,
           },
+          ...(drawOwner
+            ? {
+                drawOwner: {
+                  ...(Reflect.has(drawOwner, "geometry")
+                    ? { geometry: Reflect.get(drawOwner, "geometry") }
+                    : {}),
+                  id: drawOwner.id,
+                  kind: Reflect.get(drawOwner, "kind"),
+                  ...(Reflect.has(drawOwner, "material")
+                    ? { material: Reflect.get(drawOwner, "material") }
+                    : {}),
+                  ...(Reflect.get(drawOwner, "name")
+                    ? { name: Reflect.get(drawOwner, "name") }
+                    : {}),
+                },
+              }
+            : {}),
           source: { export: exportName, file: entry },
         });
         const root = nodes.find((node) => node.id === rootId);
@@ -810,6 +1200,7 @@ export async function inspectThree(
   }
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Target resolution, camera framing, optional mask capture, raster evidence, comparison, and lifecycle cleanup are one atomic render transaction.
 export async function renderThree(
   options: Required<
     Pick<
@@ -822,25 +1213,37 @@ export async function renderThree(
       | "action"
       | "actionInput"
       | "background"
+      | "compare"
       | "fixture"
       | "focus"
       | "framing"
       | "isolate"
       | "margin"
       | "props"
+      | "preparedPage"
+      | "reference"
+      | "silhouette"
+      | "stats"
       | "timeMs"
       | "view"
       | "zoom"
     >
 ): Promise<RenderReport> {
   const totalStartedAt = performance.now();
-  const runtime = await prepareThreePage(options);
+  const ownedRuntime = options.preparedPage
+    ? null
+    : await prepareThreePage(options);
+  const runtime = ownedRuntime ?? {
+    browser: null,
+    page: options.preparedPage as import("playwright-core").Page,
+  };
   const output = resolve(options.out);
   try {
     const scene = await extractThreeScene(runtime.page, options);
+    options.nodeId = resolveSceneNodeId(scene, options.nodeId);
     const targetNode = scene.nodes.find((node) => node.id === options.nodeId);
     if (!targetNode) {
-      throw new Error(`Target node not found: ${options.nodeId}`);
+      throw new Error(`Resolved node is missing: ${options.nodeId}`);
     }
 
     await mkdir(dirname(output), { recursive: true });
@@ -857,6 +1260,7 @@ export async function renderThree(
         focus,
         framing,
         margin,
+        silhouette,
         // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Playwright must serialize target resolution, framing, and rendering into one browser callback.
       }) => {
         const renderStartedAt = performance.now();
@@ -929,6 +1333,26 @@ export async function renderThree(
         const semanticMembers = descriptor?.members ?? implicitMembers;
         if (!(selectedTarget || descriptor || semanticMembers.length > 0)) {
           throw new Error(`Target node not found: ${nodeId}`);
+        }
+
+        const isRenderable = (object: import("three").Object3D): boolean =>
+          Reflect.get(object, "isMesh") === true ||
+          Reflect.get(object, "isPoints") === true ||
+          Reflect.get(object, "isLine") === true ||
+          Reflect.get(object, "isSprite") === true;
+        const targetRenderables = new Set<import("three").Object3D>();
+        const collectRenderable = (object: import("three").Object3D): void => {
+          object.traverse((descendant) => {
+            if (isRenderable(descendant)) {
+              targetRenderables.add(descendant);
+            }
+          });
+        };
+        if (selectedTarget) {
+          collectRenderable(selectedTarget);
+        }
+        for (const member of semanticMembers) {
+          collectRenderable(member.object);
         }
 
         result.scene.updateMatrixWorld(true);
@@ -1021,6 +1445,53 @@ export async function renderThree(
               );
           });
         }
+        let lightsPreserved = 0;
+        if (isolate) {
+          result.scene.traverse((object) => {
+            if (Reflect.get(object, "isLight") !== true) {
+              return;
+            }
+            if (!object.visible) {
+              lightsPreserved += 1;
+            }
+            let current: import("three").Object3D | null = object;
+            while (current) {
+              current.visible = true;
+              current = current.parent;
+            }
+          });
+        }
+        const effectivelyVisible = (
+          object: import("three").Object3D
+        ): boolean => {
+          let current: import("three").Object3D | null = object;
+          while (current) {
+            if (!current.visible) {
+              return false;
+            }
+            current = current.parent;
+          }
+          return true;
+        };
+        const visibleRenderables: import("three").Object3D[] = [];
+        result.scene.traverse((object) => {
+          if (isRenderable(object) && effectivelyVisible(object)) {
+            visibleRenderables.push(object);
+          }
+        });
+        const contextRenderableCount = visibleRenderables.filter(
+          (object) => !targetRenderables.has(object)
+        ).length;
+        const environmentPresent = result.scene.environment !== null;
+        const contextEvidence = {
+          backgroundPresent:
+            background !== null || result.scene.background !== null,
+          contextRenderableCount,
+          empty: contextRenderableCount === 0 && !environmentPresent,
+          environmentPresent,
+          targetRenderableCount: targetRenderables.size,
+          totalRenderableCount: visibleRenderables.length,
+        };
 
         const cameraSnapshot = (value: import("three").Camera) => {
           const perspective = Reflect.get(value, "isPerspectiveCamera")
@@ -1061,13 +1532,28 @@ export async function renderThree(
               framedCamera as import("three").PerspectiveCamera;
             perspective.aspect = width / height;
             const direction = view
-              ? new THREE.Vector3(
-                  Math.cos(THREE.MathUtils.degToRad(view.elevation)) *
-                    Math.cos(THREE.MathUtils.degToRad(view.azimuth)),
-                  Math.cos(THREE.MathUtils.degToRad(view.elevation)) *
-                    Math.sin(THREE.MathUtils.degToRad(view.azimuth)),
-                  Math.sin(THREE.MathUtils.degToRad(view.elevation))
-                )
+              ? (() => {
+                  const up = perspective.up.clone().normalize();
+                  const horizontalX = new THREE.Vector3(
+                    1,
+                    0,
+                    0
+                  ).addScaledVector(up, -up.x);
+                  if (horizontalX.lengthSq() < 0.0001) {
+                    horizontalX.set(0, 0, 1).addScaledVector(up, -up.z);
+                  }
+                  horizontalX.normalize();
+                  const horizontalY = up.clone().cross(horizontalX).normalize();
+                  const azimuth = THREE.MathUtils.degToRad(view.azimuth);
+                  const elevation = THREE.MathUtils.degToRad(view.elevation);
+                  return horizontalX
+                    .multiplyScalar(Math.cos(elevation) * Math.cos(azimuth))
+                    .addScaledVector(
+                      horizontalY,
+                      Math.cos(elevation) * Math.sin(azimuth)
+                    )
+                    .addScaledVector(up, Math.sin(elevation));
+                })()
               : perspective
                   .getWorldDirection(new THREE.Vector3())
                   .multiplyScalar(-1);
@@ -1112,6 +1598,16 @@ export async function renderThree(
         frameCamera(camera);
         camera.updateMatrixWorld(true);
         const resolvedCamera = cameraSnapshot(camera);
+        const projectedCorners = [
+          [box.min.x, box.min.y, box.min.z],
+          [box.min.x, box.min.y, box.max.z],
+          [box.min.x, box.max.y, box.min.z],
+          [box.min.x, box.max.y, box.max.z],
+          [box.max.x, box.min.y, box.min.z],
+          [box.max.x, box.min.y, box.max.z],
+          [box.max.x, box.max.y, box.min.z],
+          [box.max.x, box.max.y, box.max.z],
+        ].map(([x, y, z]) => new THREE.Vector3(x, y, z).project(camera));
 
         const ownRenderer = !result.renderer;
         const renderer =
@@ -1125,12 +1621,256 @@ export async function renderThree(
         const renderedHeight = Math.round(height * scale);
         renderer.setPixelRatio(1);
         renderer.setSize(renderedWidth, renderedHeight, false);
+        const gl = renderer.getContext();
+        const debugRenderer = gl.getExtension("WEBGL_debug_renderer_info");
+        const rendererName = String(
+          debugRenderer
+            ? gl.getParameter(debugRenderer.UNMASKED_RENDERER_WEBGL)
+            : gl.getParameter(gl.RENDERER)
+        );
         if (background && background !== "transparent") {
           renderer.setClearColor(background, 1);
         } else if (background === "transparent") {
           renderer.setClearColor(0x00_00_00, 0);
         }
         renderer.render(result.scene, camera);
+        let silhouetteEvidence:
+          | {
+              available: true;
+              areaPixels: number;
+              compactness: number;
+              dataUrl: string;
+              granularity: "draw-owner" | "target";
+              ignoredNonMeshCount: number;
+              perimeterPixels: number;
+              profile: {
+                curvatureSignChanges: number;
+                highFrequencyDirectionReversals: number;
+                maximumDeviationFromLocalTrendPx: number;
+              };
+              targetMeshCount: number;
+            }
+          | {
+              available: false;
+              reason: string;
+            }
+          | undefined;
+        if (silhouette) {
+          const targetMeshes = [...targetRenderables].filter(
+            (object) => Reflect.get(object, "isMesh") === true
+          );
+          if (targetMeshes.length === 0) {
+            silhouetteEvidence = {
+              available: false,
+              reason:
+                "The resolved target has no mesh draw owner; point, line, and sprite silhouettes are not measured.",
+            };
+          } else {
+            const visibility = new Map<import("three").Object3D, boolean>();
+            result.scene.traverse((object) => {
+              if (isRenderable(object)) {
+                visibility.set(object, object.visible);
+                object.visible = targetMeshes.includes(object);
+              }
+            });
+            const priorBackground = result.scene.background;
+            const priorOverrideMaterial = result.scene.overrideMaterial;
+            const priorClearColor = renderer.getClearColor(new THREE.Color());
+            const priorClearAlpha = renderer.getClearAlpha();
+            const maskMaterial = new THREE.MeshBasicMaterial({
+              color: 0xff_ff_ff,
+              side: THREE.DoubleSide,
+              toneMapped: false,
+            });
+            result.scene.background = null;
+            result.scene.overrideMaterial = maskMaterial;
+            renderer.setClearColor(0x00_00_00, 1);
+            renderer.render(result.scene, camera);
+
+            const maskCanvas = document.createElement("canvas");
+            maskCanvas.width = renderedWidth;
+            maskCanvas.height = renderedHeight;
+            const maskContext = maskCanvas.getContext("2d", {
+              willReadFrequently: true,
+            });
+            if (!maskContext) {
+              throw new Error(
+                "A 2D canvas is required for silhouette diagnostics."
+              );
+            }
+            maskContext.drawImage(renderer.domElement, 0, 0);
+            const maskImage = maskContext.getImageData(
+              0,
+              0,
+              renderedWidth,
+              renderedHeight
+            );
+            const binary = new Uint8Array(renderedWidth * renderedHeight);
+            let areaPixels = 0;
+            for (let pixel = 0; pixel < binary.length; pixel += 1) {
+              const offset = pixel * 4;
+              const luminance =
+                ((maskImage.data[offset] ?? 0) +
+                  (maskImage.data[offset + 1] ?? 0) +
+                  (maskImage.data[offset + 2] ?? 0)) /
+                3;
+              if (luminance > 127) {
+                binary[pixel] = 1;
+                areaPixels += 1;
+                maskImage.data[offset] = 255;
+                maskImage.data[offset + 1] = 255;
+                maskImage.data[offset + 2] = 255;
+              } else {
+                maskImage.data[offset] = 0;
+                maskImage.data[offset + 1] = 0;
+                maskImage.data[offset + 2] = 0;
+              }
+              maskImage.data[offset + 3] = 255;
+            }
+            maskContext.putImageData(maskImage, 0, 0);
+
+            let perimeterPixels = 0;
+            const leftByRow: number[] = [];
+            const rightByRow: number[] = [];
+            for (let y = 0; y < renderedHeight; y += 1) {
+              let left = renderedWidth;
+              let right = -1;
+              for (let x = 0; x < renderedWidth; x += 1) {
+                const pixel = y * renderedWidth + x;
+                if (binary[pixel] !== 1) {
+                  continue;
+                }
+                left = Math.min(left, x);
+                right = Math.max(right, x);
+                if (x === 0 || binary[pixel - 1] !== 1) {
+                  perimeterPixels += 1;
+                }
+                if (x === renderedWidth - 1 || binary[pixel + 1] !== 1) {
+                  perimeterPixels += 1;
+                }
+                if (y === 0 || binary[pixel - renderedWidth] !== 1) {
+                  perimeterPixels += 1;
+                }
+                if (
+                  y === renderedHeight - 1 ||
+                  binary[pixel + renderedWidth] !== 1
+                ) {
+                  perimeterPixels += 1;
+                }
+              }
+              if (right >= 0) {
+                leftByRow.push(left);
+                rightByRow.push(right);
+              }
+            }
+            const topByColumn: number[] = [];
+            const bottomByColumn: number[] = [];
+            for (let x = 0; x < renderedWidth; x += 1) {
+              let top = renderedHeight;
+              let bottom = -1;
+              for (let y = 0; y < renderedHeight; y += 1) {
+                if (binary[y * renderedWidth + x] !== 1) {
+                  continue;
+                }
+                top = Math.min(top, y);
+                bottom = Math.max(bottom, y);
+              }
+              if (bottom >= 0) {
+                topByColumn.push(top);
+                bottomByColumn.push(bottom);
+              }
+            }
+            const profiles = [
+              leftByRow,
+              rightByRow,
+              topByColumn,
+              bottomByColumn,
+            ];
+            let curvatureSignChanges = 0;
+            let highFrequencyDirectionReversals = 0;
+            let maximumDeviationFromLocalTrendPx = 0;
+            for (const profile of profiles) {
+              let priorDirection = 0;
+              let priorCurvature = 0;
+              for (let index = 1; index < profile.length; index += 1) {
+                const direction = Math.sign(
+                  (profile[index] ?? 0) - (profile[index - 1] ?? 0)
+                );
+                if (
+                  direction !== 0 &&
+                  priorDirection !== 0 &&
+                  direction !== priorDirection
+                ) {
+                  highFrequencyDirectionReversals += 1;
+                }
+                if (direction !== 0) {
+                  priorDirection = direction;
+                }
+                if (index >= 2) {
+                  const curvature = Math.sign(
+                    (profile[index] ?? 0) -
+                      2 * (profile[index - 1] ?? 0) +
+                      (profile[index - 2] ?? 0)
+                  );
+                  if (
+                    curvature !== 0 &&
+                    priorCurvature !== 0 &&
+                    curvature !== priorCurvature
+                  ) {
+                    curvatureSignChanges += 1;
+                  }
+                  if (curvature !== 0) {
+                    priorCurvature = curvature;
+                  }
+                }
+                if (index >= 3 && index + 3 < profile.length) {
+                  let localSum = 0;
+                  for (let offset = -3; offset <= 3; offset += 1) {
+                    if (offset !== 0) {
+                      localSum += profile[index + offset] ?? 0;
+                    }
+                  }
+                  maximumDeviationFromLocalTrendPx = Math.max(
+                    maximumDeviationFromLocalTrendPx,
+                    Math.abs((profile[index] ?? 0) - localSum / 6)
+                  );
+                }
+              }
+            }
+            silhouetteEvidence = {
+              areaPixels,
+              available: true,
+              compactness:
+                perimeterPixels === 0
+                  ? 0
+                  : (4 * Math.PI * areaPixels) /
+                    (perimeterPixels * perimeterPixels),
+              dataUrl: maskCanvas.toDataURL("image/png"),
+              granularity: semanticMembers.some(
+                (member) => typeof member.instanceId === "number"
+              )
+                ? "draw-owner"
+                : "target",
+              ignoredNonMeshCount: targetRenderables.size - targetMeshes.length,
+              perimeterPixels,
+              profile: {
+                curvatureSignChanges,
+                highFrequencyDirectionReversals,
+                maximumDeviationFromLocalTrendPx,
+              },
+              targetMeshCount: targetMeshes.length,
+            };
+
+            for (const [object, wasVisible] of visibility) {
+              object.visible = wasVisible;
+            }
+            result.scene.background = priorBackground;
+            result.scene.overrideMaterial = priorOverrideMaterial;
+            renderer.setClearColor(priorClearColor, priorClearAlpha);
+            maskMaterial.dispose();
+            renderer.render(result.scene, camera);
+          }
+        }
         const canvas = renderer.domElement;
         canvas.dataset.uisceneOutput = "true";
         canvas.style.display = "block";
@@ -1147,6 +1887,22 @@ export async function renderThree(
         const center = focus
           ? new THREE.Vector3(...focus)
           : box.getCenter(new THREE.Vector3());
+        const projectedX = projectedCorners.map(
+          (corner) => (corner.x * 0.5 + 0.5) * renderedWidth
+        );
+        const projectedY = projectedCorners.map(
+          (corner) => (1 - (corner.y * 0.5 + 0.5)) * renderedHeight
+        );
+        const targetLeft = Math.max(0, Math.min(...projectedX));
+        const targetTop = Math.max(0, Math.min(...projectedY));
+        const targetRight = Math.min(renderedWidth, Math.max(...projectedX));
+        const targetBottom = Math.min(renderedHeight, Math.max(...projectedY));
+        const targetScreenBounds = {
+          height: Math.max(0, targetBottom - targetTop),
+          width: Math.max(0, targetRight - targetLeft),
+          x: targetLeft,
+          y: targetTop,
+        };
 
         return {
           boundsValid,
@@ -1167,12 +1923,20 @@ export async function renderThree(
             view: view?.label ?? "original",
             zoom,
           },
+          contextEvidence,
+          isolation: { lightsPreserved, requested: isolate },
           logicalSize: { height, width },
           renderedSize: {
             height: renderedHeight,
             width: renderedWidth,
           },
+          rendererName,
           renderMs: performance.now() - renderStartedAt,
+          silhouetteEvidence,
+          targetProjectedCoverage:
+            (targetScreenBounds.width * targetScreenBounds.height) /
+            Math.max(1, renderedWidth * renderedHeight),
+          targetScreenBounds,
         };
       },
       {
@@ -1184,11 +1948,49 @@ export async function renderThree(
         margin: options.margin ?? 0.12,
         nodeId: options.nodeId,
         scale: options.scale,
+        silhouette:
+          (options.silhouette ?? false) || options.reference !== undefined,
         view: options.view ?? null,
         width: options.width,
         zoom: options.zoom ?? 1,
       }
     );
+
+    let silhouetteReport: RenderReport["silhouette"];
+    if (rendered.silhouetteEvidence?.available === false) {
+      silhouetteReport = {
+        available: false,
+        caveat: SILHOUETTE_CAVEAT,
+        reason: rendered.silhouetteEvidence.reason,
+      };
+    } else if (rendered.silhouetteEvidence?.available === true) {
+      const extension = extname(output);
+      const stem = extension
+        ? output.slice(0, Math.max(0, output.length - extension.length))
+        : output;
+      const artifact = `${stem}-silhouette.png`;
+      await writeFile(
+        artifact,
+        Buffer.from(
+          rendered.silhouetteEvidence.dataUrl.slice(
+            rendered.silhouetteEvidence.dataUrl.indexOf(",") + 1
+          ),
+          "base64"
+        )
+      );
+      silhouetteReport = {
+        areaPixels: rendered.silhouetteEvidence.areaPixels,
+        artifact,
+        available: true,
+        caveat: SILHOUETTE_CAVEAT,
+        compactness: rendered.silhouetteEvidence.compactness,
+        granularity: rendered.silhouetteEvidence.granularity,
+        ignoredNonMeshCount: rendered.silhouetteEvidence.ignoredNonMeshCount,
+        perimeterPixels: rendered.silhouetteEvidence.perimeterPixels,
+        profile: rendered.silhouetteEvidence.profile,
+        targetMeshCount: rendered.silhouetteEvidence.targetMeshCount,
+      };
+    }
 
     const captureStartedAt = performance.now();
     await runtime.page
@@ -1201,6 +2003,108 @@ export async function renderThree(
         timeout: 120_000,
       });
     const captureMs = performance.now() - captureStartedAt;
+    const rasterStats = await analyzeCanvasRaster(
+      runtime.page,
+      "canvas[data-uiscene-output='true']",
+      rendered.targetScreenBounds
+    );
+    const comparison = options.compare
+      ? await compareCanvasWithPng(
+          runtime.page,
+          "canvas[data-uiscene-output='true']",
+          options.compare,
+          output
+        )
+      : undefined;
+    if (options.reference && rendered.silhouetteEvidence?.available !== true) {
+      throw new Error(
+        "Reference comparison requires a mesh target with an available renderer-derived silhouette mask."
+      );
+    }
+    const referenceComparison =
+      options.reference && rendered.silhouetteEvidence?.available === true
+        ? await compareRenderToReference({
+            currentMaskDataUrl: rendered.silhouetteEvidence.dataUrl,
+            currentOutput: output,
+            ...(options.reference.maskPath
+              ? { maskPath: options.reference.maskPath }
+              : {}),
+            page: runtime.page,
+            probes: options.reference.probes,
+            referencePath: options.reference.path,
+            ...(options.reference.region
+              ? { referenceRegion: options.reference.region }
+              : {}),
+            selector: "canvas[data-uiscene-output='true']",
+          })
+        : undefined;
+    const luminanceSeparation = Math.abs(
+      rasterStats.luminance.p50 - rasterStats.background.luminance
+    );
+    const surfaceLuminanceSpread =
+      rasterStats.sampleLuminance.p90 - rasterStats.sampleLuminance.p10;
+    const surfaceJudgeable =
+      surfaceLuminanceSpread >= SURFACE_LUMINANCE_SPREAD_THRESHOLD;
+    let limitingFactor: "contrast" | "dispersion" | "framing" | null = null;
+    if (rendered.targetProjectedCoverage < 0.05) {
+      limitingFactor = "framing";
+    } else if (
+      rasterStats.sampleCoverageFraction < 0.08 &&
+      luminanceSeparation < 0.04
+    ) {
+      limitingFactor = "contrast";
+    } else if (rasterStats.sampleCoverageFraction < 0.05) {
+      limitingFactor = "dispersion";
+    }
+    const quality = {
+      explanation:
+        rendered.camera.framing === "source"
+          ? "The target was located for diagnostics, but the literal fixture camera was preserved; use --framing fit or --view when target framing is intended."
+          : "The selected target was located and used to frame the resolved camera.",
+      judgeable: limitingFactor === null,
+      limitingFactor,
+      surfaceJudgeable,
+      surfaceLuminanceSpread,
+      surfaceLuminanceThreshold: SURFACE_LUMINANCE_SPREAD_THRESHOLD,
+      targetProjectedCoverage: rendered.targetProjectedCoverage,
+      targetProjectedPixelSize: {
+        height: rendered.targetScreenBounds.height,
+        width: rendered.targetScreenBounds.width,
+      },
+      targetSignalCoverage: rasterStats.sampleCoverageFraction,
+    };
+    const warnings = [
+      ...(limitingFactor === "framing"
+        ? [
+            `Target projection occupies only ${(rendered.targetProjectedCoverage * 100).toFixed(1)}% of the frame; framing, not scale, is limiting.`,
+          ]
+        : []),
+      ...(limitingFactor === "contrast"
+        ? [
+            "The target is framed but has insufficient luminance separation from the background; inspect material and light state before changing the camera.",
+          ]
+        : []),
+      ...(limitingFactor === "dispersion"
+        ? [
+            "The target bounds are framed, but visible signal occupies too little of that extent; sparse or dispersed geometry makes fit framing uninformative.",
+          ]
+        : []),
+      ...(surfaceJudgeable
+        ? []
+        : [
+            `Target surface dynamic range is insufficient for a supported surface-quality judgment: p90-p10 ${surfaceLuminanceSpread.toFixed(4)} is below ${SURFACE_LUMINANCE_SPREAD_THRESHOLD.toFixed(4)}.`,
+          ]),
+      ...(rendered.contextEvidence.empty
+        ? [
+            "The target was rendered without other renderable scene context or an environment; isolation is useful for identification but insufficient for contextual approval.",
+          ]
+        : []),
+      ...(rendered.rendererName.toLowerCase().includes("swiftshader")
+        ? [
+            "Rendering used SwiftShader CPU rasterization; this artifact is not GPU performance evidence.",
+          ]
+        : []),
+    ];
     const outputNonempty = (await stat(output)).size > 0;
     const requestedScaleAchieved =
       rendered.renderedSize.width ===
@@ -1209,6 +2113,7 @@ export async function renderThree(
         Math.round(options.height * options.scale);
     const checks = {
       boundsValid: rendered.boundsValid,
+      evidenceJudgeable: quality.judgeable,
       exportFound: true,
       moduleLoaded: true,
       outputNonempty,
@@ -1239,21 +2144,41 @@ export async function renderThree(
         target: rendered.camera.target as [number, number, number],
       },
       checks,
+      ...(comparison ? { comparison } : {}),
+      context: rendered.contextEvidence,
       fixture: options.fixture,
+      isolation: rendered.isolation,
       logicalSize: rendered.logicalSize,
       nodeId: options.nodeId,
+      quality,
+      rasterizer: rasterizerInfo(rendered.rendererName),
+      ...(referenceComparison ? { reference: referenceComparison.report } : {}),
       renderedSize: rendered.renderedSize,
       renderer: "three",
       scale: options.scale,
+      ...(silhouetteReport ? { silhouette: silhouetteReport } : {}),
+      ...(options.stats
+        ? {
+            stats: {
+              background: rasterStats.background,
+              coverageFraction: rasterStats.coverageFraction,
+              luminance: rasterStats.luminance,
+            },
+          }
+        : {}),
       success: Object.values(checks).every(Boolean),
       timingsMs: {
         capture: captureMs,
         render: rendered.renderMs,
         total: performance.now() - totalStartedAt,
       },
+      warnings: [
+        ...warnings,
+        ...(referenceComparison ? referenceComparison.warnings : []),
+      ],
     };
   } finally {
-    await runtime.browser.close();
+    await runtime.browser?.close();
   }
 }
 
@@ -1323,8 +2248,19 @@ export async function renderThreeFrames(
     );
   }
 
-  const directory = resolve(options.out);
+  const requestedOutput = resolve(options.out);
+  const contactSheetIsFile = extname(requestedOutput).toLowerCase() === ".png";
+  const directory = contactSheetIsFile
+    ? join(
+        dirname(requestedOutput),
+        `${basename(requestedOutput, extname(requestedOutput))}-frames`
+      )
+    : requestedOutput;
+  const contactSheet = contactSheetIsFile
+    ? requestedOutput
+    : join(directory, "contact-sheet.png");
   await mkdir(directory, { recursive: true });
+  await mkdir(dirname(contactSheet), { recursive: true });
   const runtime = await prepareThreePage({
     entry: options.entry,
     exportName: options.exportName,
@@ -1335,9 +2271,7 @@ export async function renderThreeFrames(
   });
   try {
     const scene = await extractThreeScene(runtime.page, options);
-    if (!scene.nodes.some((node) => node.id === options.nodeId)) {
-      throw new Error(`Target node not found: ${options.nodeId}`);
-    }
+    options.nodeId = resolveSceneNodeId(scene, options.nodeId);
     const rendered = await runtime.page.evaluate(
       async ({
         action,
@@ -1497,6 +2431,18 @@ export async function renderThreeFrames(
               );
           });
         }
+        if (isolate) {
+          result.scene.traverse((object) => {
+            if (Reflect.get(object, "isLight") !== true) {
+              return;
+            }
+            let current: import("three").Object3D | null = object;
+            while (current) {
+              current.visible = true;
+              current = current.parent;
+            }
+          });
+        }
 
         const ownRenderer = !result.renderer;
         const renderer =
@@ -1510,6 +2456,13 @@ export async function renderThreeFrames(
         const renderedHeight = Math.round(height * scale);
         renderer.setPixelRatio(1);
         renderer.setSize(renderedWidth, renderedHeight, false);
+        const gl = renderer.getContext();
+        const debugRenderer = gl.getExtension("WEBGL_debug_renderer_info");
+        const rendererName = String(
+          debugRenderer
+            ? gl.getParameter(debugRenderer.UNMASKED_RENDERER_WEBGL)
+            : gl.getParameter(gl.RENDERER)
+        );
         if (background && background !== "transparent") {
           renderer.setClearColor(background, 1);
         } else if (background === "transparent") {
@@ -1528,6 +2481,101 @@ export async function renderThreeFrames(
         sheet.style.padding = "16px";
         sheet.style.width = "max-content";
         let actionApplied = false;
+        let actionMutatedObjectCount: number | null = action ? 0 : null;
+        const serializableValue = (value: unknown): unknown => {
+          if (
+            value === null ||
+            typeof value === "boolean" ||
+            typeof value === "number" ||
+            typeof value === "string"
+          ) {
+            return value;
+          }
+          if (Array.isArray(value)) {
+            return value.map(serializableValue);
+          }
+          if (typeof value === "object" && value !== null) {
+            const record = value as Record<string, unknown>;
+            if (
+              record.isColor === true &&
+              typeof record.getHex === "function"
+            ) {
+              return (record.getHex as () => number)();
+            }
+            if (typeof record.toArray === "function") {
+              return (record.toArray as () => unknown[])().map(
+                serializableValue
+              );
+            }
+          }
+          return String(value);
+        };
+        const sceneObjectState = (): Map<import("three").Object3D, string> => {
+          result.scene.updateMatrixWorld(true);
+          const state = new Map<import("three").Object3D, string>();
+          result.scene.traverse((object) => {
+            const rawMaterial = Reflect.get(object, "material") as
+              | import("three").Material
+              | import("three").Material[]
+              | undefined;
+            let materials: import("three").Material[] = [];
+            if (rawMaterial) {
+              materials = Array.isArray(rawMaterial)
+                ? rawMaterial
+                : [rawMaterial];
+            }
+            const geometry = Reflect.get(object, "geometry") as
+              | import("three").BufferGeometry
+              | undefined;
+            state.set(
+              object,
+              JSON.stringify({
+                geometry: geometry
+                  ? {
+                      attributes: Object.fromEntries(
+                        Object.entries(geometry.attributes).map(
+                          ([name, attribute]) => [
+                            name,
+                            Number(
+                              Reflect.get(attribute, "version") ??
+                                Reflect.get(
+                                  Reflect.get(attribute, "data") ?? {},
+                                  "version"
+                                ) ??
+                                0
+                            ),
+                          ]
+                        )
+                      ),
+                      drawRange: geometry.drawRange,
+                    }
+                  : null,
+                material: materials.map((material) => {
+                  const uniforms = Reflect.get(material, "uniforms") as
+                    | Record<string, { value?: unknown }>
+                    | undefined;
+                  return {
+                    color: serializableValue(Reflect.get(material, "color")),
+                    opacity: material.opacity,
+                    uniforms: uniforms
+                      ? Object.fromEntries(
+                          Object.entries(uniforms).map(([name, uniform]) => [
+                            name,
+                            serializableValue(uniform.value),
+                          ])
+                        )
+                      : null,
+                    visible: material.visible,
+                  };
+                }),
+                matrix: object.matrix.toArray(),
+                matrixWorld: object.matrixWorld.toArray(),
+                visible: object.visible,
+              })
+            );
+          });
+          return state;
+        };
         const applyAction = async (): Promise<void> => {
           if (actionApplied || !action) {
             return;
@@ -1536,7 +2584,12 @@ export async function renderThreeFrames(
           if (typeof selectedAction !== "function") {
             throw new Error(`Scene fixture action ${action} was not found.`);
           }
+          const beforeAction = sceneObjectState();
           await selectedAction(actionInput);
+          const afterAction = sceneObjectState();
+          actionMutatedObjectCount = [...afterAction.entries()].filter(
+            ([object, state]) => beforeAction.get(object) !== state
+          ).length;
           actionApplied = true;
         };
         const outputs: Array<{
@@ -1544,6 +2597,15 @@ export async function renderThreeFrames(
           label: string;
           timeMs: number | null;
         }> = [];
+        const comparisons: Array<{
+          changedPixelFraction: number;
+          classification: "below-perceptual-floor" | "changed" | "identical";
+          from: string;
+          normalizedRasterDelta: number;
+          to: string;
+        }> = [];
+        let previousPixels: Uint8ClampedArray | null = null;
+        let previousLabel: string | null = null;
         for (const [index, token] of frameTokens.entries()) {
           if (token.kind === "time") {
             // biome-ignore lint/performance/noAwaitInLoops: Timeline samples are intentionally sequential mutations of one live scene.
@@ -1577,13 +2639,31 @@ export async function renderThreeFrames(
               const perspective = camera as import("three").PerspectiveCamera;
               perspective.aspect = width / height;
               const direction = view
-                ? new THREE.Vector3(
-                    Math.cos(THREE.MathUtils.degToRad(view.elevation)) *
-                      Math.cos(THREE.MathUtils.degToRad(view.azimuth)),
-                    Math.cos(THREE.MathUtils.degToRad(view.elevation)) *
-                      Math.sin(THREE.MathUtils.degToRad(view.azimuth)),
-                    Math.sin(THREE.MathUtils.degToRad(view.elevation))
-                  )
+                ? (() => {
+                    const up = perspective.up.clone().normalize();
+                    const horizontalX = new THREE.Vector3(
+                      1,
+                      0,
+                      0
+                    ).addScaledVector(up, -up.x);
+                    if (horizontalX.lengthSq() < 0.0001) {
+                      horizontalX.set(0, 0, 1).addScaledVector(up, -up.z);
+                    }
+                    horizontalX.normalize();
+                    const horizontalY = up
+                      .clone()
+                      .cross(horizontalX)
+                      .normalize();
+                    const azimuth = THREE.MathUtils.degToRad(view.azimuth);
+                    const elevation = THREE.MathUtils.degToRad(view.elevation);
+                    return horizontalX
+                      .multiplyScalar(Math.cos(elevation) * Math.cos(azimuth))
+                      .addScaledVector(
+                        horizontalY,
+                        Math.cos(elevation) * Math.sin(azimuth)
+                      )
+                      .addScaledVector(up, Math.sin(elevation));
+                  })()
                 : perspective
                     .getWorldDirection(new THREE.Vector3())
                     .multiplyScalar(-1);
@@ -1612,11 +2692,61 @@ export async function renderThreeFrames(
           copy.style.display = "block";
           copy.style.height = `${renderedHeight}px`;
           copy.style.width = `${renderedWidth}px`;
-          const context = copy.getContext("2d");
+          const context = copy.getContext("2d", { willReadFrequently: true });
           if (!context) {
             throw new Error("A 2D canvas is required for frame capture.");
           }
           context.drawImage(renderer.domElement, 0, 0);
+          const pixels = context.getImageData(
+            0,
+            0,
+            renderedWidth,
+            renderedHeight
+          ).data;
+          if (previousPixels && previousLabel) {
+            let absoluteDelta = 0;
+            let changedPixels = 0;
+            for (let offset = 0; offset < pixels.length; offset += 4) {
+              const redDelta = Math.abs(
+                (pixels[offset] ?? 0) - (previousPixels[offset] ?? 0)
+              );
+              const greenDelta = Math.abs(
+                (pixels[offset + 1] ?? 0) - (previousPixels[offset + 1] ?? 0)
+              );
+              const blueDelta = Math.abs(
+                (pixels[offset + 2] ?? 0) - (previousPixels[offset + 2] ?? 0)
+              );
+              absoluteDelta += redDelta + greenDelta + blueDelta;
+              if (Math.max(redDelta, greenDelta, blueDelta) > 2) {
+                changedPixels += 1;
+              }
+            }
+            const pixelCount = Math.max(1, renderedWidth * renderedHeight);
+            const normalizedRasterDelta =
+              absoluteDelta / (pixelCount * 3 * 255);
+            const changedPixelFraction = changedPixels / pixelCount;
+            let classification:
+              | "below-perceptual-floor"
+              | "changed"
+              | "identical" = "changed";
+            if (absoluteDelta === 0) {
+              classification = "identical";
+            } else if (
+              normalizedRasterDelta < 0.001 &&
+              changedPixelFraction < 0.005
+            ) {
+              classification = "below-perceptual-floor";
+            }
+            comparisons.push({
+              changedPixelFraction,
+              classification,
+              from: previousLabel,
+              normalizedRasterDelta,
+              to: token.label,
+            });
+          }
+          previousPixels = new Uint8ClampedArray(pixels);
+          previousLabel = token.label;
           const card = document.createElement("section");
           card.style.background = "#121621";
           card.style.border = "1px solid #252b3a";
@@ -1637,7 +2767,12 @@ export async function renderThreeFrames(
           ownRenderer,
           renderer,
         });
-        return outputs;
+        return {
+          actionMutatedObjectCount,
+          comparisons,
+          outputs,
+          rendererName,
+        };
       },
       {
         action: options.action ?? null,
@@ -1657,7 +2792,7 @@ export async function renderThreeFrames(
       }
     );
     const frames: FrameRenderReport["frames"] = [];
-    for (const frame of rendered) {
+    for (const frame of rendered.outputs) {
       const filename =
         frame.label === "before" || frame.label === "settled"
           ? `${frame.label}.png`
@@ -1679,7 +2814,6 @@ export async function renderThreeFrames(
         timeMs: frame.timeMs,
       });
     }
-    const contactSheet = join(directory, "contact-sheet.png");
     await runtime.page
       .locator("main[data-sceneproof-frames='true']")
       .screenshot({
@@ -1690,9 +2824,40 @@ export async function renderThreeFrames(
         timeout: 120_000,
       });
     const manifest = join(directory, "frames.json");
+    const motionDetected = rendered.comparisons.some(
+      (comparison) => comparison.classification === "changed"
+    );
+    const warnings = [
+      ...(options.action && rendered.actionMutatedObjectCount === 0
+        ? [`Action ${options.action} mutated 0 scene objects.`]
+        : []),
+      ...(options.action && !motionDetected
+        ? [
+            "The requested action sequence contains no visual transition above the reported perceptual floor.",
+          ]
+        : []),
+      ...rendered.comparisons.flatMap((comparison) => {
+        if (comparison.classification === "identical") {
+          return [
+            `Frames ${comparison.from} and ${comparison.to} are pixel-identical.`,
+          ];
+        }
+        if (comparison.classification === "below-perceptual-floor") {
+          return [
+            `Frames ${comparison.from} and ${comparison.to} differ below the perceptual floor.`,
+          ];
+        }
+        return [];
+      }),
+    ];
     const report: FrameRenderReport = {
+      action: {
+        mutatedObjectCount: rendered.actionMutatedObjectCount,
+        requested: Boolean(options.action),
+      },
       artifacts: { contactSheet, directory, manifest },
       command: "render-frames",
+      comparisons: rendered.comparisons,
       frames,
       lifecycle: {
         actions: options.action ? 1 : 0,
@@ -1701,16 +2866,27 @@ export async function renderThreeFrames(
         frames: frames.length,
         sceneInstances: 1,
       },
+      quality: {
+        motionDetected,
+        perceptualFloor: {
+          changedPixelFraction: 0.005,
+          normalizedRasterDelta: 0.001,
+        },
+      },
+      rasterizer: rasterizerInfo(rendered.rendererName),
       success: false,
+      warnings,
     };
     // Resolve the asynchronous artifact checks before persisting the report.
-    report.success =
+    const artifactsComplete =
       frames.length === parsed.length &&
       (
         await Promise.all(
           frames.map(async (frame) => (await stat(frame.artifact)).size > 0)
         )
       ).every(Boolean);
+    report.success =
+      artifactsComplete && (!options.action || report.quality.motionDetected);
     await writeFile(manifest, `${JSON.stringify(report, null, 2)}\n`);
     await runtime.page.evaluate(() => {
       const output = Reflect.get(window, "__UISCENE_FRAMES_RENDERER__") as
@@ -1744,6 +2920,7 @@ export async function renderThreeRegion(
     background?: string;
     fixture?: FixtureProvenance;
     props: Record<string, unknown>;
+    stats?: boolean;
     timeMs?: number;
   }
 ): Promise<RegionRenderReport> {
@@ -1815,6 +2992,13 @@ export async function renderThreeRegion(
           renderer.setClearColor(0x00_00_00, 0);
         }
         renderer.render(result.scene, camera);
+        const gl = renderer.getContext();
+        const debugRenderer = gl.getExtension("WEBGL_debug_renderer_info");
+        const rendererName = String(
+          debugRenderer
+            ? gl.getParameter(debugRenderer.UNMASKED_RENDERER_WEBGL)
+            : gl.getParameter(gl.RENDERER)
+        );
         const canvas = renderer.domElement;
         canvas.dataset.uisceneOutput = "true";
         canvas.style.display = "block";
@@ -1833,6 +3017,7 @@ export async function renderThreeRegion(
             height: renderedHeight,
             width: renderedWidth,
           },
+          rendererName,
           renderMs: performance.now() - renderStartedAt,
         };
       },
@@ -1856,6 +3041,12 @@ export async function renderThreeRegion(
         timeout: 120_000,
       });
     const captureMs = performance.now() - captureStartedAt;
+    const rasterStats = options.stats
+      ? await analyzeCanvasRaster(
+          runtime.page,
+          "canvas[data-uiscene-output='true']"
+        )
+      : null;
     const outputNonempty = (await stat(output)).size > 0;
     const expected = {
       height: Math.round(options.region.height * options.scale),
@@ -1894,10 +3085,20 @@ export async function renderThreeRegion(
         height: options.region.height,
         width: options.region.width,
       },
+      rasterizer: rasterizerInfo(rendered.rendererName),
       region: options.region,
       renderedSize: rendered.renderedSize,
       renderer: "three",
       scale: options.scale,
+      ...(rasterStats
+        ? {
+            stats: {
+              background: rasterStats.background,
+              coverageFraction: rasterStats.coverageFraction,
+              luminance: rasterStats.luminance,
+            },
+          }
+        : {}),
       success: Object.values(checks).every(Boolean),
       timingsMs: {
         capture: captureMs,
@@ -1936,11 +3137,13 @@ export async function scoutThree(
 
   try {
     const scene = await extractThreeScene(runtime.page, options);
+    options.nodeId = resolveSceneNodeId(scene, options.nodeId);
     const targetNode = scene.nodes.find((node) => node.id === options.nodeId);
     if (!targetNode) {
-      throw new Error(`Target node not found: ${options.nodeId}`);
+      throw new Error(`Resolved node is missing: ${options.nodeId}`);
     }
     if (options.focusNodeId) {
+      options.focusNodeId = resolveSceneNodeId(scene, options.focusNodeId);
       const focusNode = scene.nodes.find(
         (node) => node.id === options.focusNodeId
       );
@@ -2106,6 +3309,19 @@ export async function scoutThree(
           });
         }
 
+        if (isolate) {
+          result.scene.traverse((object) => {
+            if (Reflect.get(object, "isLight") !== true) {
+              return;
+            }
+            let current: import("three").Object3D | null = object;
+            while (current) {
+              current.visible = true;
+              current = current.parent;
+            }
+          });
+        }
+
         const targetRadius = Math.max(
           targetBox.getBoundingSphere(new THREE.Sphere()).radius,
           0.1
@@ -2123,13 +3339,27 @@ export async function scoutThree(
             return;
           }
           const direction = view
-            ? new THREE.Vector3(
-                Math.cos(THREE.MathUtils.degToRad(view.elevation)) *
-                  Math.cos(THREE.MathUtils.degToRad(view.azimuth)),
-                Math.cos(THREE.MathUtils.degToRad(view.elevation)) *
-                  Math.sin(THREE.MathUtils.degToRad(view.azimuth)),
-                Math.sin(THREE.MathUtils.degToRad(view.elevation))
-              )
+            ? (() => {
+                const up = perspective.up.clone().normalize();
+                const horizontalX = new THREE.Vector3(1, 0, 0).addScaledVector(
+                  up,
+                  -up.x
+                );
+                if (horizontalX.lengthSq() < 0.0001) {
+                  horizontalX.set(0, 0, 1).addScaledVector(up, -up.z);
+                }
+                horizontalX.normalize();
+                const horizontalY = up.clone().cross(horizontalX).normalize();
+                const azimuth = THREE.MathUtils.degToRad(view.azimuth);
+                const elevation = THREE.MathUtils.degToRad(view.elevation);
+                return horizontalX
+                  .multiplyScalar(Math.cos(elevation) * Math.cos(azimuth))
+                  .addScaledVector(
+                    horizontalY,
+                    Math.cos(elevation) * Math.sin(azimuth)
+                  )
+                  .addScaledVector(up, Math.sin(elevation));
+              })()
             : perspective.position.clone().sub(focusPoint);
           if (direction.lengthSq() === 0) {
             direction.set(1, -1, 1);
@@ -2418,6 +3648,13 @@ export async function scoutThree(
           });
         renderer.setPixelRatio(1);
         renderer.setSize(width, height, false);
+        const gl = renderer.getContext();
+        const debugRenderer = gl.getExtension("WEBGL_debug_renderer_info");
+        const rendererName = String(
+          debugRenderer
+            ? gl.getParameter(debugRenderer.UNMASKED_RENDERER_WEBGL)
+            : gl.getParameter(gl.RENDERER)
+        );
         if (background && background !== "transparent") {
           renderer.setClearColor(background, 1);
         } else if (background === "transparent") {
@@ -2551,6 +3788,7 @@ export async function scoutThree(
               .toArray()
               .map((value) => Number(value.toFixed(9))),
           },
+          rendererName,
         };
       },
       {
@@ -2778,12 +4016,27 @@ export async function scoutThree(
         };
     const sourceTargetPixelFraction =
       originalCandidate?.metrics.visiblePixelFraction ?? 0;
+    const sourceProjectedCoverage =
+      originalCandidate?.metrics.targetCoverage ?? 0;
+    const contrastLimited =
+      sourceProjectedCoverage >= 0.05 &&
+      sourceTargetPixelFraction < 0.08 &&
+      (originalCandidate?.metrics.contrastStdDev ?? 0) < 0.02;
+    const dispersionLimited =
+      sourceProjectedCoverage >= 0.18 && sourceTargetPixelFraction < 0.05;
+    let limitingFactor: ScoutReport["diagnosis"]["limitingFactor"] =
+      "raster-resolution";
+    if (contrastLimited) {
+      limitingFactor = "contrast";
+    } else if (sourceProjectedCoverage < 0.18) {
+      limitingFactor = "framing";
+    } else if (dispersionLimited) {
+      limitingFactor = "dispersion";
+    }
     const diagnosis = {
-      higherScaleWouldHelp: sourceTargetPixelFraction >= 0.18,
-      limitingFactor:
-        sourceTargetPixelFraction < 0.18
-          ? ("framing" as const)
-          : ("raster-resolution" as const),
+      higherScaleWouldHelp: limitingFactor === "raster-resolution",
+      limitingFactor,
+      sourceProjectedCoverage,
       sourceTargetPixelFraction,
     };
     const recommendations = structuralWarning
@@ -2846,6 +4099,7 @@ export async function scoutThree(
         bundles: 1,
         sceneInstances: 1,
       },
+      rasterizer: rasterizerInfo(candidatePass.rendererName),
       recommendations,
       recommended,
       success:
@@ -2863,6 +4117,16 @@ export async function scoutThree(
       },
       warnings: [
         ...scene.warnings,
+        ...(contrastLimited
+          ? [
+              "The source target is framed but has insufficient contrast against the background; inspect material and light state before changing cameras.",
+            ]
+          : []),
+        ...(dispersionLimited
+          ? [
+              "The source target bounds contain sparse visible signal; bounds-based framing may be uninformative.",
+            ]
+          : []),
         ...(targetNode.kind !== "SemanticTarget" &&
         targetNode.children.length > 0
           ? [

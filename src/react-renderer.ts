@@ -47,8 +47,11 @@ function driverSource(input: ReactOptions): string {
             window.__UISCENE_READY__ = true;
           });
       } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
         window.__UISCENE_ERROR__ =
-          error instanceof Error ? error.message : String(error);
+          "React export ${input.exportName.replaceAll('"', '\\"')} failed to render with the provided props: " +
+          detail +
+          ". Supply the component fixture with --props <file>; the reported property name identifies the nearest missing access.";
       }
     }
   `;
@@ -73,11 +76,19 @@ async function prepareReactPage(
       viewport: { height: options.height, width: options.width },
     });
     const page = await context.newPage();
-    await mountBundle({
-      css: bundle.css,
-      javascript: bundle.javascript,
-      page,
-    });
+    try {
+      await mountBundle({
+        css: bundle.css,
+        javascript: bundle.javascript,
+        page,
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `React export ${options.exportName} failed to render with the provided props: ${detail} Supply the component fixture with --props <file>; the reported property name identifies the nearest missing access.`,
+        { cause: error }
+      );
+    }
     return { browser, page };
   } catch (error) {
     await browser.close();
