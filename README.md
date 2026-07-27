@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ReyJ94/SceneProof/releases/tag/v0.4.0"><img alt="Release v0.4.0" src="https://img.shields.io/badge/release-v0.4.0-E6A34D?style=flat-square" /></a>
+  <a href="https://github.com/ReyJ94/SceneProof/releases/tag/v0.5.0"><img alt="Release v0.5.0" src="https://img.shields.io/badge/release-v0.5.0-E6A34D?style=flat-square" /></a>
 </p>
 
 SceneProof lets coding agents see the interfaces and Three.js scenes they
@@ -23,6 +23,10 @@ visual judgment.
 Agents can recognize what they made, understand why it looks wrong, and ground
 their final judgment in falsifiable visual evidence—instead of coding UI and 3D
 blind.
+
+**New in v0.5.0:** render Three.js fixtures through explicit WebGL or WebGPU
+backends, prove the actual backend and adapter in every report, and reject
+silent WebGL fallback or incompatible GLSL-only material paths.
 
 **New in v0.4.0:** distinguish execution from visual acceptance, derive typed
 React prop fixtures, compare targets in context and isolation, assert delivery
@@ -103,9 +107,11 @@ return its own diagnostic.
 sceneproof doctor
 ```
 
-`doctor` reports executable discovery, browser launch, WebGL availability, the
-active renderer, and the required execution guidance. A failed check exits
-non-zero.
+`doctor` reports executable discovery, browser launch, WebGL availability, an
+actual WebGPU clear-and-readback probe, the active renderer or adapter, and the
+required execution guidance. Merely finding a WebGPU adapter is not counted as
+readiness. Use `sceneproof doctor --require-backend both` when both paths are a
+release requirement. A failed requirement exits non-zero.
 
 </details>
 
@@ -243,7 +249,7 @@ aggregate never substitutes one perspective for another.
 | `scout` | Discover useful Three.js target cameras in one scene lifecycle |
 | `render` | Produce fresh context or target evidence |
 | `render-region` | Rerender an exact logical viewport patch |
-| `doctor` | Prove Chromium and WebGL readiness and explain required permissions |
+| `doctor` | Prove Chromium and WebGL/WebGPU readiness and explain required permissions |
 
 SceneProof owns renderer setup and evidence persistence. The agent chooses the
 real source boundary, declared state, semantic target, framing, and evidence
@@ -392,6 +398,37 @@ and `--isolated` select either view independently; `--isolated` is an alias for
 For the exact lifecycle, semantic target, instance ID, camera, and diagnostic
 contracts, read [the Three.js fixture protocol](docs/three-fixtures.md).
 
+### WebGL and WebGPU
+
+WebGL remains the compatibility-first default. Select WebGPU explicitly when
+the source is WebGPU-compatible:
+
+```bash
+sceneproof render scripts/sceneproof/gallery.scene.ts \
+  three:featured-item \
+  --three-backend webgpu \
+  --framing source \
+  --out artifacts/gallery-webgpu.png
+```
+
+SceneProof reports `graphics.requested`, `renderer`, `actual`, `fallback`,
+adapter identity, and rasterizer provenance. A WebGPU request is strict: if
+Three.js falls back to WebGL2, the command fails instead of mislabeling the
+artifact. WebGPU entries are bundled against `three/webgpu`; GLSL
+`ShaderMaterial`, `RawShaderMaterial`, custom `onBeforeCompile`, and addons that
+depend on WebGL-only Three.js exports are rejected with migration guidance.
+Use TSL/NodeMaterial and WebGPU-compatible addons for that path, or request
+`--three-backend webgl` deliberately.
+
+WebGPU is not automatically faster or visually better. Headless Chromium may
+expose a fallback adapter such as SwiftShader; those artifacts can prove
+rendering and visual behavior, but they are not real-GPU performance evidence.
+The report preserves that distinction rather than treating backend availability
+as a quality verdict. On Linux, SceneProof selects Chromium's SwiftShader
+WebGPU adapter for deterministic headless capture and reads the rendered GPU
+texture directly because the presentation canvas is transient. Use the
+reported backend and adapter as provenance, never as a performance claim.
+
 ## Current scope
 
 SceneProof currently supports:
@@ -402,6 +439,9 @@ SceneProof currently supports:
 - workspace `@/` imports, JSON props, source CSS, and Tailwind v4;
 - Three.js scene graphs, transforms, world bounds, BufferGeometry attributes,
   materials, shader uniforms, textures, lights, cameras, and relationships;
+- explicit WebGL and WebGPU capture with backend, adapter, fallback, and
+  rasterizer provenance; strict WebGPU compatibility checks prevent silent
+  WebGL substitution or partial GLSL evidence;
 - custom-named Three.js factories, deterministic props/actions/time, source
   camera preservation, semantic targets, stable `InstancedMesh` instance IDs,
   and single-lifecycle frame sequences;
@@ -414,11 +454,11 @@ SceneProof currently supports:
 - typed React prop skeletons and explicitly provenance-marked partial-prop
   completion.
 
-Three.js capture currently targets `WebGLRenderer`; `WebGPURenderer` and WebGPU
-fixture support are not implemented. SVG-native export is also not implemented.
-The GitHub installation uses SceneProof's linked source entry. The standalone
-Bun compiled binary remains experimental for arbitrary workspace entries with
-nested package imports.
+SVG-native export is not implemented. The GitHub installation uses SceneProof's
+linked source entry. The standalone Bun compiled binary remains experimental
+for arbitrary workspace entries with nested package imports. WebGPU support is
+bounded by the source's Three.js compatibility: SceneProof does not translate
+GLSL shaders or WebGL-only addons into TSL.
 
 ## Development
 

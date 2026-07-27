@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.5.0] - 2026-07-27
+
+### Added
+
+- Explicit `--three-backend webgl|webgpu` selection across Three.js evidence
+  commands, with WebGL retained as the compatibility-first default.
+- Backend provenance in reports: requested and actual backend, renderer family,
+  silent-fallback status, adapter identity, and rasterizer information.
+- WebGPU readiness diagnostics backed by an actual GPU clear-and-readback, plus
+  `doctor --require-backend any|webgl|webgpu|both` for enforceable environment
+  requirements.
+
+### Changed
+
+- Three.js source bundles target `three/webgpu` when WebGPU is requested and
+  run from a trustworthy loopback origin required by the browser API.
+- The public fixture contract accepts either `WebGLRenderer` or
+  `WebGPURenderer`; a supplied renderer must match the explicitly requested
+  backend.
+
+### Fixed
+
+- WebGPU requests no longer accept Three.js's silent WebGL2 fallback as WebGPU
+  evidence.
+- GLSL-only materials, custom `onBeforeCompile` paths, and addons that require
+  WebGL-only Three.js exports now fail with attributable TSL/NodeMaterial or
+  explicit-WebGL guidance instead of producing partial or mislabeled evidence.
+- Headless WebGPU capture reads the rendered GPU texture directly instead of
+  trusting a transient DOM canvas presentation buffer, including frame,
+  region, and Scout evidence paths.
+
 ## [0.4.0] - 2026-07-27
 
 ### Added
@@ -112,6 +143,7 @@ of an uninformative image.
 Initial public release with source-grounded React and Three.js inspection,
 structural evidence, focused rerendering, and Scout camera discovery.
 
+[0.5.0]: https://github.com/ReyJ94/SceneProof/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/ReyJ94/SceneProof/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/ReyJ94/SceneProof/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ReyJ94/SceneProof/compare/v0.1.0...v0.2.0

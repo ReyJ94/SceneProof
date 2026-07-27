@@ -123,6 +123,11 @@ The full optional result surface is:
 - `dispose()`: releases fixture-owned renderers, controls, geometry, or other
   resources.
 
+`renderer` may be a Three.js `WebGLRenderer` or `WebGPURenderer`. Prefer
+omitting it unless the production owner must configure the renderer itself;
+SceneProof then creates the renderer matching `--three-backend`. Returning a
+renderer from the opposite family is an explicit error rather than a fallback.
+
 For a normal command, SceneProof awaits `ready`, applies `--action` once, then
 applies `--time`. `--action-input` must be a JSON object and requires an action.
 
@@ -267,13 +272,38 @@ so a successful capture cannot silently certify a null transition.
 
 ## Execution diagnostics
 
-SceneProof requires local Chromium and WebGL. In an agent sandbox, invoke it as
-the direct command with unsandboxed/local-render permission:
+SceneProof requires local Chromium and at least one supported graphics backend.
+WebGL is the default; WebGPU is opt-in and strict:
+
+```bash
+sceneproof render scene.ts three:subject --three-backend webgpu --out subject.png
+sceneproof doctor --require-backend both
+```
+
+When WebGPU is requested, SceneProof bundles the entry's bare `three` import
+against `three/webgpu`, initializes `WebGPURenderer`, and verifies the actual
+backend after initialization. A silent Three.js fallback to WebGL2 fails the
+command. Visible `ShaderMaterial`, `RawShaderMaterial`, custom
+`onBeforeCompile`, or dependencies that require WebGL-only Three.js exports
+also fail with attributable compatibility guidance. Migrate those paths to
+TSL/NodeMaterial and WebGPU-compatible addons, or choose WebGL explicitly.
+
+Reports preserve requested and actual backend, renderer family, adapter data,
+fallback status, and rasterizer. A SwiftShader or fallback-adapter result is
+valid visual evidence when its quality gates pass, but it is not evidence of
+hardware-GPU performance. `doctor` requires a real WebGPU clear-and-readback,
+not just `navigator.gpu` or an adapter object. On Linux, SceneProof selects
+Chromium's SwiftShader adapter for deterministic headless capture and reads the
+GPU texture directly rather than relying on the transient presentation canvas.
+
+In an agent sandbox, invoke SceneProof as the direct command with
+unsandboxed/local-render permission:
 
 ```bash
 sceneproof doctor
 ```
 
 Do not bury the invocation in a pipe or compound shell when requesting that
-permission. `doctor` exits non-zero if Chromium cannot launch or WebGL is not
-available and returns the detected executable and renderer on success.
+permission. `doctor` exits non-zero if Chromium cannot launch or its requested
+backend requirement is not met. Without `--require-backend`, either available
+backend satisfies the graphics capability check.
