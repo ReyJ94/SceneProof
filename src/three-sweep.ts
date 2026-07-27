@@ -10,6 +10,7 @@ import {
 import { agentReviewStatus, assertionStatus } from "./report-status.js";
 import type { SweepRenderReport } from "./scene-schema.js";
 import { bundleBrowserDriver } from "./source-bundle.js";
+import type { GraphicsInfo } from "./three-backend.js";
 import { renderThree } from "./three-renderer.js";
 
 type RenderThreeOptions = Parameters<typeof renderThree>[0];
@@ -103,6 +104,7 @@ function sweepDriverSource(
 ): string {
   return `
     import * as THREE from "three";
+    import { WebGPURenderer } from "three/webgpu";
     import * as SourceModule from ${JSON.stringify(options.entry)};
 
     (async () => {
@@ -153,7 +155,11 @@ function sweepDriverSource(
         }
         result.scene.updateMatrixWorld(true);
         result.camera.updateMatrixWorld(true);
-        window.__UISCENE_THREE__ = { THREE, result };
+        window.__UISCENE_THREE__ = {
+          THREE,
+          WebGPURenderer,
+          result,
+        };
         window.__UISCENE_READY__ = true;
       } catch (error) {
         window.__UISCENE_ERROR__ =
@@ -163,6 +169,7 @@ function sweepDriverSource(
   `;
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: One sweep transaction owns variant lifecycles, GPU provenance, raster comparison, ranking, and manifest attribution.
 export async function renderThreeSweep(
   options: SweepOptions
 ): Promise<SweepRenderReport> {
@@ -184,6 +191,7 @@ export async function renderThreeSweep(
   await mkdir(directory, { recursive: true });
   await mkdir(dirname(contactSheet), { recursive: true });
   const variants: SweepRenderReport["variants"] = [];
+  let graphics: GraphicsInfo | undefined;
   const childWarnings: string[] = [];
   const variantProps = options.sweep.values.map((value) =>
     propsWithOverride(options.props, options.sweep.path, value)
@@ -192,11 +200,14 @@ export async function renderThreeSweep(
     entry: options.entry,
     extraCss: [],
     source: sweepDriverSource(options, variantProps),
+    ...(options.threeBackend ? { threeBackend: options.threeBackend } : {}),
   });
   const tileWidth = Math.round(options.width * options.scale);
   const tileHeight = Math.round(options.height * options.scale);
   const labelHeight = 28;
-  const browser = await launchBrowser();
+  const browser = await launchBrowser({
+    threeBackend: options.threeBackend ?? "webgl",
+  });
   let comparisons: SweepRenderReport["comparisons"] = [];
   try {
     const browserContext = await browser.newContext({
@@ -217,7 +228,7 @@ export async function renderThreeSweep(
       // biome-ignore lint/performance/noAwaitInLoops: Every page is one attributable fixture instance in the shared bundle/browser lifecycle.
       const page = await browserContext.newPage();
       try {
-        await page.evaluate((variantIndex) => {
+        await page.addInitScript((variantIndex) => {
           Reflect.set(
             window,
             "__SCENEPROOF_SWEEP_VARIANT_INDEX__",
@@ -237,6 +248,7 @@ export async function renderThreeSweep(
           silhouette: false,
           stats: false,
         });
+        graphics ??= report.graphics;
         variants.push({
           artifact,
           index,
@@ -424,6 +436,7 @@ export async function renderThreeSweep(
     artifacts: { contactSheet, directory, manifest },
     command: "render-sweep",
     comparisons,
+    ...(graphics ? { graphics } : {}),
     lifecycle: {
       browserLaunches: 1,
       bundles: 1,

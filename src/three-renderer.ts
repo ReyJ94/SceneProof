@@ -1,7 +1,11 @@
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join, resolve } from "node:path";
 
-import { launchBrowser, mountBundle } from "./browser-runtime.js";
+import {
+  assertNoBrowserPageErrors,
+  launchBrowser,
+  mountBundle,
+} from "./browser-runtime.js";
 import { compareRenderToReference } from "./reference-comparison.js";
 import {
   agentReviewStatus,
@@ -22,6 +26,11 @@ import {
   type ScoutReport,
 } from "./scene-schema.js";
 import { bundleBrowserDriver } from "./source-bundle.js";
+import {
+  type BrowserRendererHandle,
+  ensureThreeRenderer,
+  type ThreeBackend,
+} from "./three-backend.js";
 
 export type FixtureProvenance = {
   action: { inputPath?: string; name: string } | null;
@@ -70,6 +79,7 @@ type ThreeOptions = {
   timeMs?: number;
   silhouette?: boolean;
   stats?: boolean;
+  threeBackend?: ThreeBackend;
 };
 
 type PixelRect = {
@@ -398,6 +408,7 @@ export type ThreeScoutOptions = {
   width: number;
   fixture?: FixtureProvenance;
   props: Record<string, unknown>;
+  threeBackend?: ThreeBackend;
   timeMs?: number;
 };
 
@@ -559,6 +570,7 @@ function sourceRegionCommand(input: {
 export function driverSource(input: ThreeOptions): string {
   return `
     import * as THREE from "three";
+    import { WebGPURenderer } from "three/webgpu";
     import * as SourceModule from ${JSON.stringify(input.entry)};
 
     (async () => {
@@ -605,7 +617,11 @@ export function driverSource(input: ThreeOptions): string {
         }
         result.scene.updateMatrixWorld(true);
         result.camera.updateMatrixWorld(true);
-        window.__UISCENE_THREE__ = { THREE, result };
+        window.__UISCENE_THREE__ = {
+          THREE,
+          WebGPURenderer,
+          result,
+        };
         window.__UISCENE_READY__ = true;
       } catch (error) {
         window.__UISCENE_ERROR__ =
@@ -620,8 +636,11 @@ async function prepareThreePage(options: ThreeOptions) {
     entry: options.entry,
     extraCss: [],
     source: driverSource(options),
+    ...(options.threeBackend ? { threeBackend: options.threeBackend } : {}),
   });
-  const browser = await launchBrowser();
+  const browser = await launchBrowser({
+    threeBackend: options.threeBackend ?? "webgl",
+  });
   try {
     const context = await browser.newContext({
       viewport: { height: options.height, width: options.width },
@@ -1242,6 +1261,7 @@ export async function renderThree(
       | "reference"
       | "silhouette"
       | "stats"
+      | "threeBackend"
       | "timeMs"
       | "view"
       | "zoom"
@@ -1263,10 +1283,11 @@ export async function renderThree(
     if (!targetNode) {
       throw new Error(`Resolved node is missing: ${options.nodeId}`);
     }
+    await ensureThreeRenderer(runtime.page, options.threeBackend ?? "webgl");
 
     await mkdir(dirname(output), { recursive: true });
     const rendered = await runtime.page.evaluate(
-      ({
+      async ({
         nodeId,
         width,
         height,
@@ -1285,10 +1306,10 @@ export async function renderThree(
         const renderStartedAt = performance.now();
         const browserRuntime = Reflect.get(window, "__UISCENE_THREE__") as {
           THREE: typeof import("three");
+          ensureRenderer: () => Promise<BrowserRendererHandle>;
           result: {
             camera: import("three").Camera;
             dispose?: () => void | Promise<void>;
-            renderer?: import("three").WebGLRenderer;
             scene: import("three").Scene;
             targets?: Array<{
               bounds?: import("three").Box3 | (() => import("three").Box3);
@@ -1658,31 +1679,30 @@ export async function renderThree(
           [box.max.x, box.max.y, box.max.z],
         ].map(([x, y, z]) => new THREE.Vector3(x, y, z).project(camera));
 
-        const ownRenderer = !result.renderer;
-        const renderer =
-          result.renderer ??
-          new THREE.WebGLRenderer({
-            alpha: background === "transparent",
-            antialias: true,
-            preserveDrawingBuffer: true,
-          });
+        const {
+          captureCanvas,
+          graphics,
+          ownsRenderer: ownRenderer,
+          renderScene,
+          renderer,
+        } = await browserRuntime.ensureRenderer();
         const renderedWidth = Math.round(width * scale);
         const renderedHeight = Math.round(height * scale);
-        renderer.setPixelRatio(1);
-        renderer.setSize(renderedWidth, renderedHeight, false);
-        const gl = renderer.getContext();
-        const debugRenderer = gl.getExtension("WEBGL_debug_renderer_info");
-        const rendererName = String(
-          debugRenderer
-            ? gl.getParameter(debugRenderer.UNMASKED_RENDERER_WEBGL)
-            : gl.getParameter(gl.RENDERER)
-        );
+        if (
+          graphics.actual !== "webgpu" ||
+          renderer.domElement.width !== renderedWidth ||
+          renderer.domElement.height !== renderedHeight
+        ) {
+          renderer.setPixelRatio(1);
+          renderer.setSize(renderedWidth, renderedHeight, false);
+        }
+        const rendererName = graphics.rasterizer ?? graphics.renderer;
         if (background && background !== "transparent") {
           renderer.setClearColor(background, 1);
         } else if (background === "transparent") {
           renderer.setClearColor(0x00_00_00, 0);
         }
-        renderer.render(result.scene, camera);
+        await renderScene(result.scene, camera);
         let silhouetteEvidence:
           | {
               available: true;
@@ -1736,7 +1756,7 @@ export async function renderThree(
             result.scene.background = null;
             result.scene.overrideMaterial = maskMaterial;
             renderer.setClearColor(0x00_00_00, 1);
-            renderer.render(result.scene, camera);
+            await renderScene(result.scene, camera);
 
             const maskCanvas = document.createElement("canvas");
             maskCanvas.width = renderedWidth;
@@ -1749,7 +1769,7 @@ export async function renderThree(
                 "A 2D canvas is required for silhouette diagnostics."
               );
             }
-            maskContext.drawImage(renderer.domElement, 0, 0);
+            maskContext.drawImage(await captureCanvas(), 0, 0);
             const maskImage = maskContext.getImageData(
               0,
               0,
@@ -1981,10 +2001,10 @@ export async function renderThree(
             result.scene.overrideMaterial = priorOverrideMaterial;
             renderer.setClearColor(priorClearColor, priorClearAlpha);
             maskMaterial.dispose();
-            renderer.render(result.scene, camera);
+            await renderScene(result.scene, camera);
           }
         }
-        const canvas = renderer.domElement;
+        const canvas = await captureCanvas();
         canvas.dataset.uisceneOutput = "true";
         canvas.style.display = "block";
         canvas.style.height = `${renderedHeight}px`;
@@ -1992,7 +2012,11 @@ export async function renderThree(
         document.documentElement.style.background = "transparent";
         document.body.style.background = "transparent";
         document.body.style.margin = "0";
-        document.body.replaceChildren(canvas);
+        if (graphics.actual === "webgpu") {
+          document.body.append(canvas);
+        } else {
+          document.body.replaceChildren(canvas);
+        }
         Reflect.set(window, "__UISCENE_OUTPUT_RENDERER__", {
           ownRenderer,
           renderer,
@@ -2037,6 +2061,7 @@ export async function renderThree(
             zoom,
           },
           contextEvidence,
+          graphics,
           isolation: { lightsPreserved, requested: isolate },
           logicalSize: { height, width },
           renderedSize: {
@@ -2070,6 +2095,7 @@ export async function renderThree(
       }
     );
 
+    await assertNoBrowserPageErrors(runtime.page);
     let silhouetteReport: RenderReport["silhouette"];
     if (rendered.silhouetteEvidence?.available === false) {
       silhouetteReport = {
@@ -2252,21 +2278,23 @@ export async function renderThree(
       requestedScaleAchieved,
       targetFound: true,
     };
-    await runtime.page.evaluate(() => {
+    await runtime.page.evaluate((disposeRenderer) => {
       const outputRuntime = Reflect.get(
         window,
         "__UISCENE_OUTPUT_RENDERER__"
       ) as
         | {
             ownRenderer: boolean;
-            renderer: import("three").WebGLRenderer;
+            renderer:
+              | import("three").WebGLRenderer
+              | import("three/webgpu").WebGPURenderer;
           }
         | undefined;
-      if (outputRuntime?.ownRenderer) {
+      if (disposeRenderer && outputRuntime?.ownRenderer) {
         outputRuntime.renderer.dispose();
       }
       Reflect.deleteProperty(window, "__UISCENE_OUTPUT_RENDERER__");
-    });
+    }, !options.preserveFixture);
     if (!options.preserveFixture) {
       await disposeThree(runtime.page);
     }
@@ -2289,6 +2317,7 @@ export async function renderThree(
       ...(comparison ? { comparison } : {}),
       context: rendered.contextEvidence,
       fixture: options.fixture,
+      graphics: rendered.graphics,
       isolation: rendered.isolation,
       logicalSize: rendered.logicalSize,
       nodeId: options.nodeId,
@@ -2349,6 +2378,7 @@ export async function renderThreeFrames(
       | "framing"
       | "isolate"
       | "margin"
+      | "threeBackend"
       | "view"
       | "zoom"
     > & { frames: string }
@@ -2409,11 +2439,13 @@ export async function renderThreeFrames(
     height: options.height,
     props: options.props,
     scale: options.scale,
+    ...(options.threeBackend ? { threeBackend: options.threeBackend } : {}),
     width: options.width,
   });
   try {
     const scene = await extractThreeScene(runtime.page, options);
     options.nodeId = resolveSceneNodeId(scene, options.nodeId);
+    await ensureThreeRenderer(runtime.page, options.threeBackend ?? "webgl");
     const rendered = await runtime.page.evaluate(
       async ({
         action,
@@ -2434,13 +2466,13 @@ export async function renderThreeFrames(
       }) => {
         const browserRuntime = Reflect.get(window, "__UISCENE_THREE__") as {
           THREE: typeof import("three");
+          ensureRenderer: () => Promise<BrowserRendererHandle>;
           result: {
             actions?: Record<
               string,
               (input?: Record<string, unknown>) => void | Promise<void>
             >;
             camera: import("three").Camera;
-            renderer?: import("three").WebGLRenderer;
             scene: import("three").Scene;
             seek?: (timeMs: number) => void | Promise<void>;
             settle?: () => void | Promise<void>;
@@ -2586,25 +2618,24 @@ export async function renderThreeFrames(
           });
         }
 
-        const ownRenderer = !result.renderer;
-        const renderer =
-          result.renderer ??
-          new THREE.WebGLRenderer({
-            alpha: background === "transparent",
-            antialias: true,
-            preserveDrawingBuffer: true,
-          });
+        const {
+          captureCanvas,
+          graphics,
+          ownsRenderer: ownRenderer,
+          renderScene,
+          renderer,
+        } = await browserRuntime.ensureRenderer();
         const renderedWidth = Math.round(width * scale);
         const renderedHeight = Math.round(height * scale);
-        renderer.setPixelRatio(1);
-        renderer.setSize(renderedWidth, renderedHeight, false);
-        const gl = renderer.getContext();
-        const debugRenderer = gl.getExtension("WEBGL_debug_renderer_info");
-        const rendererName = String(
-          debugRenderer
-            ? gl.getParameter(debugRenderer.UNMASKED_RENDERER_WEBGL)
-            : gl.getParameter(gl.RENDERER)
-        );
+        if (
+          graphics.actual !== "webgpu" ||
+          renderer.domElement.width !== renderedWidth ||
+          renderer.domElement.height !== renderedHeight
+        ) {
+          renderer.setPixelRatio(1);
+          renderer.setSize(renderedWidth, renderedHeight, false);
+        }
+        const rendererName = graphics.rasterizer ?? graphics.renderer;
         if (background && background !== "transparent") {
           renderer.setClearColor(background, 1);
         } else if (background === "transparent") {
@@ -2827,7 +2858,7 @@ export async function renderThreeFrames(
             }
           }
           camera.updateMatrixWorld(true);
-          renderer.render(result.scene, camera);
+          await renderScene(result.scene, camera);
           const copy = document.createElement("canvas");
           copy.dataset.sceneproofFrameIndex = String(index);
           copy.height = renderedHeight;
@@ -2839,7 +2870,7 @@ export async function renderThreeFrames(
           if (!context) {
             throw new Error("A 2D canvas is required for frame capture.");
           }
-          context.drawImage(renderer.domElement, 0, 0);
+          context.drawImage(await captureCanvas(), 0, 0);
           const pixels = context.getImageData(
             0,
             0,
@@ -2946,6 +2977,7 @@ export async function renderThreeFrames(
         return {
           actionMutatedObjectCount,
           comparisons,
+          graphics,
           outputs,
           rendererName,
         };
@@ -2967,6 +2999,7 @@ export async function renderThreeFrames(
         zoom: options.zoom ?? 1,
       }
     );
+    await assertNoBrowserPageErrors(runtime.page);
     const frames: FrameRenderReport["frames"] = [];
     for (const frame of rendered.outputs) {
       const filename =
@@ -3069,6 +3102,7 @@ export async function renderThreeFrames(
         status: "failed",
       },
       frames,
+      graphics: rendered.graphics,
       lifecycle: {
         actions: options.action ? 1 : 0,
         browserLaunches: 1,
@@ -3109,7 +3143,9 @@ export async function renderThreeFrames(
       const output = Reflect.get(window, "__UISCENE_FRAMES_RENDERER__") as
         | {
             ownRenderer: boolean;
-            renderer: import("three").WebGLRenderer;
+            renderer:
+              | import("three").WebGLRenderer
+              | import("three/webgpu").WebGPURenderer;
           }
         | undefined;
       if (output?.ownRenderer) {
@@ -3138,6 +3174,7 @@ export async function renderThreeRegion(
     fixture?: FixtureProvenance;
     props: Record<string, unknown>;
     stats?: boolean;
+    threeBackend?: ThreeBackend;
     timeMs?: number;
   }
 ): Promise<RegionRenderReport> {
@@ -3145,19 +3182,20 @@ export async function renderThreeRegion(
   const runtime = await prepareThreePage(options);
   const output = resolve(options.out);
   try {
+    await ensureThreeRenderer(runtime.page, options.threeBackend ?? "webgl");
     await mkdir(dirname(output), { recursive: true });
     const rendered = await runtime.page.evaluate(
-      ({ width, height, scale, region, background }) => {
+      async ({ width, height, scale, region, background }) => {
         const renderStartedAt = performance.now();
         const browserRuntime = Reflect.get(window, "__UISCENE_THREE__") as {
           THREE: typeof import("three");
+          ensureRenderer: () => Promise<BrowserRendererHandle>;
           result: {
             camera: import("three").Camera;
-            renderer?: import("three").WebGLRenderer;
             scene: import("three").Scene;
           };
         };
-        const { THREE, result } = browserRuntime;
+        const { result } = browserRuntime;
         result.scene.updateMatrixWorld(true);
         const camera = result.camera.clone();
         const setViewOffset = Reflect.get(camera, "setViewOffset") as
@@ -3191,32 +3229,31 @@ export async function renderThreeRegion(
         updateProjectionMatrix.call(camera);
         camera.updateMatrixWorld(true);
 
-        const ownRenderer = !result.renderer;
-        const renderer =
-          result.renderer ??
-          new THREE.WebGLRenderer({
-            alpha: background === "transparent",
-            antialias: true,
-            preserveDrawingBuffer: true,
-          });
+        const {
+          captureCanvas,
+          graphics,
+          ownsRenderer: ownRenderer,
+          renderScene,
+          renderer,
+        } = await browserRuntime.ensureRenderer();
         const renderedWidth = Math.round(region.width * scale);
         const renderedHeight = Math.round(region.height * scale);
-        renderer.setPixelRatio(1);
-        renderer.setSize(renderedWidth, renderedHeight, false);
+        if (
+          graphics.actual !== "webgpu" ||
+          renderer.domElement.width !== renderedWidth ||
+          renderer.domElement.height !== renderedHeight
+        ) {
+          renderer.setPixelRatio(1);
+          renderer.setSize(renderedWidth, renderedHeight, false);
+        }
         if (background && background !== "transparent") {
           renderer.setClearColor(background, 1);
         } else if (background === "transparent") {
           renderer.setClearColor(0x00_00_00, 0);
         }
-        renderer.render(result.scene, camera);
-        const gl = renderer.getContext();
-        const debugRenderer = gl.getExtension("WEBGL_debug_renderer_info");
-        const rendererName = String(
-          debugRenderer
-            ? gl.getParameter(debugRenderer.UNMASKED_RENDERER_WEBGL)
-            : gl.getParameter(gl.RENDERER)
-        );
-        const canvas = renderer.domElement;
+        await renderScene(result.scene, camera);
+        const rendererName = graphics.rasterizer ?? graphics.renderer;
+        const canvas = await captureCanvas();
         canvas.dataset.uisceneOutput = "true";
         canvas.style.display = "block";
         canvas.style.height = `${renderedHeight}px`;
@@ -3224,12 +3261,17 @@ export async function renderThreeRegion(
         document.documentElement.style.background = "transparent";
         document.body.style.background = "transparent";
         document.body.style.margin = "0";
-        document.body.replaceChildren(canvas);
+        if (graphics.actual === "webgpu") {
+          document.body.append(canvas);
+        } else {
+          document.body.replaceChildren(canvas);
+        }
         Reflect.set(window, "__UISCENE_OUTPUT_RENDERER__", {
           ownRenderer,
           renderer,
         });
         return {
+          graphics,
           renderedSize: {
             height: renderedHeight,
             width: renderedWidth,
@@ -3247,6 +3289,7 @@ export async function renderThreeRegion(
       }
     );
 
+    await assertNoBrowserPageErrors(runtime.page);
     const captureStartedAt = performance.now();
     await runtime.page
       .locator("canvas[data-uiscene-output='true']")
@@ -3285,7 +3328,9 @@ export async function renderThreeRegion(
       ) as
         | {
             ownRenderer: boolean;
-            renderer: import("three").WebGLRenderer;
+            renderer:
+              | import("three").WebGLRenderer
+              | import("three/webgpu").WebGPURenderer;
           }
         | undefined;
       if (outputRuntime?.ownRenderer) {
@@ -3305,6 +3350,7 @@ export async function renderThreeRegion(
       artifact: output,
       checks,
       ...(options.fixture ? { fixture: options.fixture } : {}),
+      graphics: rendered.graphics,
       logicalSize: {
         height: options.region.height,
         width: options.region.width,
@@ -3349,6 +3395,7 @@ export async function scoutThree(
     height: options.height,
     props: options.props,
     scale: 1,
+    ...(options.threeBackend ? { threeBackend: options.threeBackend } : {}),
     ...(options.timeMs === undefined ? {} : { timeMs: options.timeMs }),
     width: options.width,
   });
@@ -3366,6 +3413,7 @@ export async function scoutThree(
     if (!targetNode) {
       throw new Error(`Resolved node is missing: ${options.nodeId}`);
     }
+    await ensureThreeRenderer(runtime.page, options.threeBackend ?? "webgl");
     if (options.focusNodeId) {
       options.focusNodeId = resolveSceneNodeId(scene, options.focusNodeId);
       const focusNode = scene.nodes.find(
@@ -3380,7 +3428,7 @@ export async function scoutThree(
 
     const candidatePass = await runtime.page.evaluate(
       // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Playwright must serialize this complete single-page transaction so Scout can reuse one source scene and renderer.
-      function runScoutPass({
+      async function runScoutPass({
         background,
         focus,
         focusNodeId,
@@ -3396,9 +3444,9 @@ export async function scoutThree(
         const browserRuntime = Reflect.get(window, "__UISCENE_THREE__") as
           | {
               THREE: typeof import("three");
+              ensureRenderer: () => Promise<BrowserRendererHandle>;
               result: {
                 camera: import("three").Camera;
-                renderer?: import("three").WebGLRenderer;
                 scene: import("three").Scene;
                 targets?: Array<{
                   id: string;
@@ -3861,24 +3909,22 @@ export async function scoutThree(
           );
         };
 
-        const ownRenderer = !result.renderer;
-        const renderer =
-          result.renderer ??
-          new THREE.WebGLRenderer({
-            alpha: background === "transparent",
-            antialias: true,
-            powerPreference: "high-performance",
-            preserveDrawingBuffer: true,
-          });
-        renderer.setPixelRatio(1);
-        renderer.setSize(width, height, false);
-        const gl = renderer.getContext();
-        const debugRenderer = gl.getExtension("WEBGL_debug_renderer_info");
-        const rendererName = String(
-          debugRenderer
-            ? gl.getParameter(debugRenderer.UNMASKED_RENDERER_WEBGL)
-            : gl.getParameter(gl.RENDERER)
-        );
+        const {
+          captureCanvas,
+          graphics,
+          ownsRenderer: ownRenderer,
+          renderScene,
+          renderer,
+        } = await browserRuntime.ensureRenderer();
+        if (
+          graphics.actual !== "webgpu" ||
+          renderer.domElement.width !== width ||
+          renderer.domElement.height !== height
+        ) {
+          renderer.setPixelRatio(1);
+          renderer.setSize(width, height, false);
+        }
+        const rendererName = graphics.rasterizer ?? graphics.renderer;
         if (background && background !== "transparent") {
           renderer.setClearColor(background, 1);
         } else if (background === "transparent") {
@@ -3907,9 +3953,10 @@ export async function scoutThree(
           const camera = result.camera.clone();
           frameCamera(camera, spec.view, spec.zoom, spec.sceneCamera);
           const renderStartedAt = performance.now();
-          renderer.render(result.scene, camera);
+          // biome-ignore lint/performance/noAwaitInLoops: Scout candidates intentionally share one renderer and must complete sequentially before each attributed pixel copy.
+          await renderScene(result.scene, camera);
           const renderMs = performance.now() - renderStartedAt;
-          const canvas = copyCanvas(renderer.domElement);
+          const canvas = copyCanvas(await captureCanvas());
           const metrics = {
             ...pixelMetrics(canvas),
             ...projectedMetrics(camera),
@@ -4012,6 +4059,7 @@ export async function scoutThree(
               .toArray()
               .map((value) => Number(value.toFixed(9))),
           },
+          graphics,
           rendererName,
         };
       },
@@ -4039,10 +4087,12 @@ export async function scoutThree(
       }
     );
 
+    await assertNoBrowserPageErrors(runtime.page);
     const captureStartedAt = performance.now();
-    await runtime.page.locator("main[data-uiscene-scout='true']").screenshot({
+    await runtime.page.screenshot({
       animations: "disabled",
       caret: "hide",
+      fullPage: true,
       path: artifacts.contactSheet,
       scale: "css",
       timeout: 120_000,
@@ -4052,7 +4102,9 @@ export async function scoutThree(
       const outputRuntime = Reflect.get(window, "__UISCENE_SCOUT_RENDERER__") as
         | {
             ownRenderer: boolean;
-            renderer: import("three").WebGLRenderer;
+            renderer:
+              | import("three").WebGLRenderer
+              | import("three/webgpu").WebGPURenderer;
           }
         | undefined;
       if (outputRuntime?.ownRenderer) {
@@ -4328,6 +4380,7 @@ export async function scoutThree(
       candidates,
       diagnosis,
       focus: resolvedFocus,
+      graphics: candidatePass.graphics,
       lifecycle: {
         browserLaunches: 1,
         bundles: 1,

@@ -29,6 +29,8 @@ export type BrowserBundle = {
 
 const TRANSIENT_ESBUILD_SERVICE_ERROR =
   /(?:The service was stopped|service is no longer running).*(?:EPERM|operation not permitted|send)/is;
+const WEBGPU_MISSING_THREE_EXPORT =
+  /three\.webgpu\.js.*No matching export|No matching export.*three\.webgpu\.js/is;
 
 export async function retryTransientEsbuildService<T>(
   operation: () => Promise<T>
@@ -157,7 +159,9 @@ async function discoverSourceCss(inputs: readonly string[]): Promise<string[]> {
   return [...new Set([...sharedStyles, ...appStyles])];
 }
 
-function sourceResolutionPlugin(): Plugin {
+function sourceResolutionPlugin(
+  threeBackend: "webgl" | "webgpu" = "webgl"
+): Plugin {
   return {
     name: "uiscene-source-resolution",
     setup(context) {
@@ -181,7 +185,11 @@ function sourceResolutionPlugin(): Plugin {
       );
       context.onResolve({ filter: SHARED_RUNTIME_IMPORT }, (args) => {
         try {
-          return { path: resolveRuntimeDependency(args.path) };
+          const dependency =
+            threeBackend === "webgpu" && args.path === "three"
+              ? "three/webgpu"
+              : args.path;
+          return { path: resolveRuntimeDependency(dependency) };
         } catch {
           return null;
         }
@@ -203,35 +211,54 @@ export async function bundleBrowserDriver(input: {
   entry: string;
   source: string;
   extraCss: readonly string[];
+  threeBackend?: "webgl" | "webgpu";
 }): Promise<BrowserBundle> {
   const { build } =
     await loadRuntimeDependency<typeof import("esbuild")>("esbuild");
-  const result = await retryTransientEsbuildService(() =>
-    build({
-      absWorkingDir: dirname(input.entry),
-      bundle: true,
-      define: {
-        "process.env.NODE_ENV": '"production"',
-      },
-      format: "iife",
-      jsx: "automatic",
-      logLevel: "silent",
-      metafile: true,
-      outdir: "out",
-      platform: "browser",
-      plugins: [sourceResolutionPlugin()],
-      sourcemap: "inline",
-      stdin: {
-        contents: input.source,
-        loader: "tsx",
-        resolveDir: dirname(input.entry),
-        sourcefile: "uiscene-browser-driver.tsx",
-      },
-      target: ["chrome120"],
-      write: false,
-    })
-  );
+  let result: Awaited<ReturnType<typeof build>>;
+  try {
+    result = await retryTransientEsbuildService(() =>
+      build({
+        absWorkingDir: dirname(input.entry),
+        bundle: true,
+        define: {
+          "process.env.NODE_ENV": '"production"',
+        },
+        format: "iife",
+        jsx: "automatic",
+        logLevel: "silent",
+        metafile: true,
+        outdir: "out",
+        platform: "browser",
+        plugins: [sourceResolutionPlugin(input.threeBackend)],
+        sourcemap: "inline",
+        stdin: {
+          contents: input.source,
+          loader: "tsx",
+          resolveDir: dirname(input.entry),
+          sourcefile: "uiscene-browser-driver.tsx",
+        },
+        target: ["chrome120"],
+        write: false,
+      })
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (
+      input.threeBackend === "webgpu" &&
+      WEBGPU_MISSING_THREE_EXPORT.test(message)
+    ) {
+      throw new Error(
+        `WebGPU compatibility check failed during bundling: a source dependency requires WebGL-only Three.js exports. Migrate that dependency to its WebGPU/TSL equivalent or request --three-backend webgl. ${message}`,
+        { cause: error }
+      );
+    }
+    throw error;
+  }
 
+  if (!(result.outputFiles && result.metafile)) {
+    throw new Error("Source bundle did not return in-memory outputs.");
+  }
   const javascript = result.outputFiles.find((file) =>
     file.path.endsWith(".js")
   );

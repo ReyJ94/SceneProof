@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import type { GraphicsInfo } from "./three-backend.js";
+
 export const BoundsSchema = z.object({
   height: z.number().nonnegative(),
   width: z.number().nonnegative(),
@@ -177,7 +179,7 @@ export type RasterStats = {
 };
 
 export type RasterizerInfo = {
-  kind: "hardware-or-unknown" | "swiftshader-cpu";
+  kind: "hardware-or-unknown" | "software-cpu" | "swiftshader-cpu";
   renderer: string | null;
 };
 
@@ -365,6 +367,7 @@ export type RenderReport = {
     total: number;
   };
   fixture?: unknown;
+  graphics?: GraphicsInfo;
   context?: {
     backgroundPresent: boolean;
     contextRenderableCount: number;
@@ -433,6 +436,7 @@ export type RegionRenderReport = {
     total: number;
   };
   fixture?: unknown;
+  graphics?: GraphicsInfo;
   rasterizer?: RasterizerInfo;
   renderer?: "react" | "three";
   stats?: RasterStats;
@@ -482,6 +486,7 @@ export type ScoutReport = {
   };
   candidates: ScoutCandidate[];
   evidence: EvidenceStatus;
+  graphics?: GraphicsInfo;
   execution: ExecutionStatus;
   focus: {
     nodeId?: string;
@@ -542,6 +547,7 @@ export type FrameRenderReport = {
   };
   command: "render-frames";
   evidence: EvidenceStatus;
+  graphics?: GraphicsInfo;
   execution: ExecutionStatus;
   action: {
     mutatedObjectCount: number | null;
@@ -602,6 +608,7 @@ export type SweepRenderReport = {
     sceneInstances: number;
   };
   evidence: EvidenceStatus;
+  graphics?: GraphicsInfo;
   execution: ExecutionStatus;
   recommendation?: {
     basis: "highest-reference-fit";

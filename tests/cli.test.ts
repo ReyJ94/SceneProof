@@ -29,6 +29,18 @@ const typedPropsEntry = resolve(root, "tests/fixtures/TypedPropsPanel.tsx");
 const staticActionEntry = resolve(root, "tests/fixtures/StaticActionScene.ts");
 const darkContrastEntry = resolve(root, "tests/fixtures/DarkContrastScene.ts");
 const silhouetteEntry = resolve(root, "tests/fixtures/SilhouetteScene.ts");
+const webgpuStandardEntry = resolve(
+  root,
+  "tests/fixtures/WebGpuStandardScene.ts"
+);
+const webgpuIncompatibleEntry = resolve(
+  root,
+  "tests/fixtures/WebGpuIncompatibleScene.ts"
+);
+const webgpuAddonIncompatibleEntry = resolve(
+  root,
+  "tests/fixtures/WebGpuAddonIncompatibleScene.ts"
+);
 const ambiguousReferenceEntry = resolve(
   root,
   "tests/fixtures/AmbiguousReferenceScene.ts"
@@ -76,6 +88,13 @@ const REFERENCE_MASK_DIMENSIONS = /mask dimensions differ.*reference/i;
 const COMPETING_REFERENCE_COMPONENTS = /competing.*components/i;
 const SWEEP_NO_VISUAL_CHANGE = /sweep.*no adjacent visual change/i;
 const NOT_A_TASTE_VERDICT = /not a taste verdict/i;
+const WEBGPU_COMPATIBILITY_ERROR = /WebGPU compatibility/i;
+const GLSL_SUBJECT = /glsl-subject/i;
+const SHADER_MATERIAL = /ShaderMaterial/i;
+const GLSL_TO_TSL_GUIDANCE = /GLSL.*TSL|TSL.*GLSL/i;
+const WEBGL_ONLY_EXPORTS = /WebGL-only Three\.js exports/i;
+const WEBGPU_TSL_EQUIVALENT = /WebGPU\/TSL equivalent/i;
+const EXPLICIT_WEBGL_BACKEND = /--three-backend webgl/i;
 
 type CliResult = {
   readonly status: number | null;
@@ -215,9 +234,9 @@ test("loads a reusable inspector from repository-root scripts without an app ada
       "--renderer",
       "auto",
       "--width",
-      "320",
+      "640",
       "--height",
-      "240",
+      "480",
     ]);
 
     assert.equal(result.status, 0, result.stderr);
@@ -1755,9 +1774,283 @@ test("doctor reports Chromium and WebGL readiness with actionable execution guid
   assert.equal(report.checks.chromiumFound, true);
   assert.equal(report.checks.browserLaunched, true);
   assert.equal(report.checks.webglAvailable, true);
-  assert.equal(report.rasterizer.kind, "swiftshader-cpu");
+  assert.equal(report.checks.webgpuAvailable, true);
+  assert.equal(report.webgpu.adapter.available, true);
+  assert.equal(report.webgpu.rendered, true);
+  assert.equal(report.webgpu.renderError, null);
+  assert.equal(typeof report.webgpu.adapter.isFallbackAdapter, "boolean");
+  assert.ok(
+    ["software-cpu", "swiftshader-cpu"].includes(report.rasterizer.kind)
+  );
   assert.match(report.executionGuidance, DIRECT_COMMAND_GUIDANCE);
   assert.match(report.executionGuidance, LOCAL_RENDER_GUIDANCE);
+});
+
+test("doctor can require both graphics backends explicitly", () => {
+  const result = runCli(["doctor", "--require-backend", "both"]);
+
+  assert.equal(result.status, 0, result.stderr);
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.requiredBackend, "both");
+  assert.equal(report.requirementMet, true);
+  assert.equal(report.checks.webglAvailable, true);
+  assert.equal(report.checks.webgpuAvailable, true);
+});
+
+test("renders a built-in Three.js material on actual WebGPU with explicit backend provenance", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-webgpu-standard-"));
+  const output = join(directory, "webgpu.png");
+
+  try {
+    const result = runCli([
+      "render",
+      webgpuStandardEntry,
+      "webgpu-subject",
+      "--export",
+      "createScene",
+      "--renderer",
+      "three",
+      "--three-backend",
+      "webgpu",
+      "--framing",
+      "source",
+      "--stats",
+      "--width",
+      "640",
+      "--height",
+      "480",
+      "--out",
+      output,
+    ]);
+
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.graphics.requested, "webgpu");
+    assert.equal(report.graphics.renderer, "WebGPURenderer");
+    assert.equal(report.graphics.actual, "webgpu");
+    assert.equal(report.graphics.fallback, false);
+    assert.equal(report.graphics.adapter.available, true);
+    assert.equal(report.quality.judgeable, true);
+    assert.ok(report.stats.coverageFraction > 0);
+    assert.ok(statSync(output).size > 0);
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("captures WebGPU timeline frames through direct GPU readback", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-webgpu-frames-"));
+  const output = join(directory, "frames");
+
+  try {
+    const result = runCli([
+      "render",
+      staticActionEntry,
+      "subject",
+      "--export",
+      "createScene",
+      "--renderer",
+      "three",
+      "--three-backend",
+      "webgpu",
+      "--action",
+      "select",
+      "--frames",
+      "before,0,settled",
+      "--width",
+      "128",
+      "--height",
+      "96",
+      "--out",
+      output,
+    ]);
+
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.graphics.actual, "webgpu");
+    assert.equal(report.graphics.fallback, false);
+    assert.equal(report.frames.length, 3);
+    assert.equal(report.comparisons.length, 2);
+    assert.equal(report.comparisons[0].classification, "identical");
+    for (const frame of report.frames) {
+      assert.ok(statSync(frame.artifact).size > 0);
+    }
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("captures WebGPU regions through direct GPU readback", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-webgpu-region-"));
+  const output = join(directory, "region.png");
+
+  try {
+    const result = runCli([
+      "render-region",
+      webgpuStandardEntry,
+      "--export",
+      "createScene",
+      "--renderer",
+      "three",
+      "--three-backend",
+      "webgpu",
+      "--region",
+      "0,0,160,120",
+      "--width",
+      "320",
+      "--height",
+      "240",
+      "--stats",
+      "--out",
+      output,
+    ]);
+
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.graphics.actual, "webgpu");
+    assert.equal(report.graphics.fallback, false);
+    assert.ok(report.stats.coverageFraction > 0);
+    assert.ok(statSync(output).size > 0);
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("uses WebGPU readback for Scout candidates", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-webgpu-scout-"));
+
+  try {
+    const result = runCli([
+      "scout",
+      webgpuStandardEntry,
+      "webgpu-subject",
+      "--export",
+      "createScene",
+      "--renderer",
+      "three",
+      "--three-backend",
+      "webgpu",
+      "--width",
+      "120",
+      "--height",
+      "90",
+      "--out",
+      directory,
+    ]);
+
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.graphics.actual, "webgpu");
+    assert.equal(report.graphics.fallback, false);
+    assert.equal(report.evidence.claims.framing, "judgeable");
+    assert.ok(statSync(report.artifacts.contactSheet).size > 0);
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("keeps WebGL as the default Three.js backend", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-webgl-default-"));
+  const output = join(directory, "webgl.png");
+
+  try {
+    const result = runCli([
+      "render",
+      webgpuStandardEntry,
+      "webgpu-subject",
+      "--export",
+      "createScene",
+      "--renderer",
+      "three",
+      "--framing",
+      "fit",
+      "--width",
+      "160",
+      "--height",
+      "120",
+      "--out",
+      output,
+    ]);
+
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.graphics.requested, "webgl");
+    assert.equal(report.graphics.renderer, "WebGLRenderer");
+    assert.equal(report.graphics.actual, "webgl");
+    assert.equal(report.graphics.fallback, false);
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("refuses GLSL-only materials on WebGPU instead of emitting partial evidence", () => {
+  const directory = mkdtempSync(
+    join(tmpdir(), "sceneproof-webgpu-incompatible-")
+  );
+  const output = join(directory, "must-not-exist.png");
+
+  try {
+    const result = runCli([
+      "render",
+      webgpuIncompatibleEntry,
+      "glsl-subject",
+      "--export",
+      "createScene",
+      "--renderer",
+      "three",
+      "--three-backend",
+      "webgpu",
+      "--framing",
+      "fit",
+      "--width",
+      "160",
+      "--height",
+      "120",
+      "--out",
+      output,
+    ]);
+
+    assert.notEqual(result.status, 0);
+    assert.equal(existsSync(output), false);
+    assert.match(result.stderr, WEBGPU_COMPATIBILITY_ERROR);
+    assert.match(result.stderr, GLSL_SUBJECT);
+    assert.match(result.stderr, SHADER_MATERIAL);
+    assert.match(result.stderr, GLSL_TO_TSL_GUIDANCE);
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("explains WebGL-only addon imports that cannot bundle for WebGPU", () => {
+  const directory = mkdtempSync(
+    join(tmpdir(), "sceneproof-webgpu-addon-incompatible-")
+  );
+  const output = join(directory, "must-not-exist.png");
+
+  try {
+    const result = runCli([
+      "render",
+      webgpuAddonIncompatibleEntry,
+      "scene",
+      "--export",
+      "createScene",
+      "--renderer",
+      "three",
+      "--three-backend",
+      "webgpu",
+      "--out",
+      output,
+    ]);
+
+    assert.notEqual(result.status, 0);
+    assert.equal(existsSync(output), false);
+    assert.match(result.stderr, WEBGPU_COMPATIBILITY_ERROR);
+    assert.match(result.stderr, WEBGL_ONLY_EXPORTS);
+    assert.match(result.stderr, WEBGPU_TSL_EQUIVALENT);
+    assert.match(result.stderr, EXPLICIT_WEBGL_BACKEND);
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
 });
 
 test("browser launch failure exits non-zero with local-render permission guidance", () => {

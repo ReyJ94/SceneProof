@@ -7,6 +7,7 @@ import type {
   Vector3,
   WebGLRenderer,
 } from "three";
+import type { WebGPURenderer } from "three/webgpu";
 
 export type ThreeFixtureContext<Props = Record<string, unknown>> = {
   assets: Record<string, unknown>;
@@ -44,7 +45,7 @@ export type ThreeFixtureResult = {
   camera: Camera;
   dispose?: () => void | Promise<void>;
   ready?: Promise<void>;
-  renderer?: WebGLRenderer;
+  renderer?: WebGLRenderer | WebGPURenderer;
   scene: Scene;
   seek?: (timeMs: number) => void | Promise<void>;
   settle?: () => void | Promise<void>;

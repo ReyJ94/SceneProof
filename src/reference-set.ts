@@ -13,6 +13,7 @@ import type {
   VisualAssessment,
 } from "./scene-schema.js";
 import { bundleBrowserDriver } from "./source-bundle.js";
+import type { GraphicsInfo } from "./three-backend.js";
 import { renderThree, type ThreeTargetView } from "./three-renderer.js";
 
 type RenderThreeOptions = Parameters<typeof renderThree>[0];
@@ -54,6 +55,7 @@ function safeLabel(label: string): string {
 function referenceSetDriverSource(options: ReferenceSetOptions): string {
   return `
     import * as THREE from "three";
+    import { WebGPURenderer } from "three/webgpu";
     import * as SourceModule from ${JSON.stringify(options.entry)};
 
     (async () => {
@@ -94,7 +96,11 @@ function referenceSetDriverSource(options: ReferenceSetOptions): string {
         }
         result.scene.updateMatrixWorld(true);
         result.camera.updateMatrixWorld(true);
-        window.__UISCENE_THREE__ = { THREE, result };
+        window.__UISCENE_THREE__ = {
+          THREE,
+          WebGPURenderer,
+          result,
+        };
         window.__UISCENE_READY__ = true;
       } catch (error) {
         window.__UISCENE_ERROR__ = error instanceof Error ? error.message : String(error);
@@ -113,6 +119,7 @@ export async function renderThreeReferenceSet(
   command: "render-reference-set";
   evidence: EvidenceStatus;
   execution: ExecutionStatus;
+  graphics?: GraphicsInfo;
   lifecycle: {
     browserLaunches: number;
     bundles: number;
@@ -142,14 +149,18 @@ export async function renderThreeReferenceSet(
   const manifest = join(directory, "reference-set.json");
   await mkdir(directory, { recursive: true });
   const views: ReferenceViewReport[] = [];
+  let graphics: GraphicsInfo | undefined;
   const warnings: string[] = [];
   const { out: _out, references: _references, ...base } = options;
   const bundle = await bundleBrowserDriver({
     entry: options.entry,
     extraCss: [],
     source: referenceSetDriverSource(options),
+    ...(options.threeBackend ? { threeBackend: options.threeBackend } : {}),
   });
-  const browser = await launchBrowser();
+  const browser = await launchBrowser({
+    threeBackend: options.threeBackend ?? "webgl",
+  });
   try {
     const browserContext = await browser.newContext({
       viewport: { height: options.height, width: options.width },
@@ -162,7 +173,11 @@ export async function renderThreeReferenceSet(
       // biome-ignore lint/performance/noAwaitInLoops: Each page is one attributable view within the shared bundle/browser lifecycle.
       const page = await browserContext.newPage();
       try {
-        await mountBundle({ css: "", javascript: bundle.javascript, page });
+        await mountBundle({
+          css: "",
+          javascript: bundle.javascript,
+          page,
+        });
         const framing =
           reference.framing ?? (reference.view ? "fit" : base.framing);
         const zoom = reference.zoom ?? base.zoom;
@@ -180,6 +195,7 @@ export async function renderThreeReferenceSet(
           ...(reference.view ? { view: reference.view } : {}),
           ...(zoom ? { zoom } : {}),
         });
+        graphics ??= report.graphics;
         if (!report.reference) {
           throw new Error(
             `Reference evidence was not produced for ${reference.label}.`
@@ -230,6 +246,7 @@ export async function renderThreeReferenceSet(
     },
     artifacts: { directory, manifest },
     command: "render-reference-set" as const,
+    ...(graphics ? { graphics } : {}),
     lifecycle: {
       browserLaunches: 1,
       bundles: 1,

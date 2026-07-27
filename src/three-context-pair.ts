@@ -34,14 +34,21 @@ export async function renderThreeContextPair(options: ContextPairOptions) {
     entry: options.entry,
     extraCss: [],
     source: driverSource(options),
+    ...(options.threeBackend ? { threeBackend: options.threeBackend } : {}),
   });
-  const browser = await launchBrowser();
+  const browser = await launchBrowser({
+    threeBackend: options.threeBackend ?? "webgl",
+  });
   try {
     const browserContext = await browser.newContext({
       viewport: { height: options.height, width: options.width },
     });
     const page = await browserContext.newPage();
-    await mountBundle({ css: "", javascript: bundle.javascript, page });
+    await mountBundle({
+      css: "",
+      javascript: bundle.javascript,
+      page,
+    });
     const inContext = await renderThree({
       ...options,
       inContext: true,
@@ -146,6 +153,7 @@ export async function renderThreeContextPair(options: ContextPairOptions) {
           : ("unjudgeable" as const),
       },
       execution: executionStatus(executionSucceeded),
+      ...(inContext.graphics ? { graphics: inContext.graphics } : {}),
       lifecycle: {
         browserLaunches: 1 as const,
         bundles: 1 as const,

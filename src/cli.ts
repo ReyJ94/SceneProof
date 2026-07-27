@@ -58,6 +58,7 @@ const PositiveScale = z.coerce.number().positive();
 const NonnegativeNumber = z.coerce.number().nonnegative();
 const UnitFraction = z.coerce.number().min(0).max(1);
 const RendererKindSchema = z.enum(["auto", "react", "three"]);
+const ThreeBackendSchema = z.enum(["webgl", "webgpu"]);
 const FramingSchema = z.enum(["source", "fit", "fill"]);
 const PropsSchema = z.record(z.string(), z.unknown());
 const RegionTuple = z.tuple([
@@ -94,6 +95,7 @@ type CommonOptions = {
   height: string;
   renderer: string;
   time?: string;
+  threeBackend: string;
 };
 
 type RenderOptions = CommonOptions & {
@@ -126,6 +128,11 @@ function fixtureOptions(command: Command, defaultExport: string): Command {
       "auto"
     )
     .option("--props <file>", "JSON fixture state passed to React or Three.js")
+    .option(
+      "--three-backend <webgl|webgpu>",
+      "Three.js graphics backend; WebGPU is strict and never silently falls back",
+      "webgl"
+    )
     .option(
       "--partial-props",
       "complete missing React props from TypeScript with attributable placeholders"
@@ -340,6 +347,14 @@ async function scoutBriefing(report: ScoutReport) {
     },
     execution: report.execution,
     focus: report.focus,
+    graphics: report.graphics
+      ? {
+          actual: report.graphics.actual,
+          fallback: report.graphics.fallback,
+          renderer: report.graphics.renderer,
+          requested: report.graphics.requested,
+        }
+      : undefined,
     lifecycle: report.lifecycle,
     presentation: "brief",
     rasterizer: report.rasterizer,
@@ -367,6 +382,7 @@ type PreparedSource = {
   props: Record<string, unknown>;
   renderer: RendererKind;
   timeMs?: number;
+  threeBackend: "webgl" | "webgpu";
   width: number;
 };
 
@@ -440,6 +456,7 @@ async function prepareSource(
     height,
     props: preparedProps,
     renderer,
+    threeBackend: ThreeBackendSchema.parse(raw.threeBackend),
     ...(timeMs === undefined ? {} : { timeMs }),
     width,
   };
@@ -894,6 +911,7 @@ renderOptions(
         nodeId,
         props: prepared.props,
         scale,
+        threeBackend: prepared.threeBackend,
         width: prepared.width,
         ...(raw.deliveryScale
           ? {
@@ -1121,6 +1139,7 @@ renderOptions(
           region,
           scale,
           stats: raw.stats ?? false,
+          threeBackend: prepared.threeBackend,
           ...(prepared.timeMs === undefined ? {} : { timeMs: prepared.timeMs }),
           width: prepared.width,
           ...(raw.background === undefined
@@ -1174,6 +1193,7 @@ scoutOptions(
       props?: string;
       renderer: string;
       time?: string;
+      threeBackend: string;
       width: string;
     }
   ) => {
@@ -1199,6 +1219,7 @@ scoutOptions(
           nodeId,
           out: resolve(raw.out),
           props: prepared.props,
+          threeBackend: prepared.threeBackend,
           ...(prepared.timeMs === undefined ? {} : { timeMs: prepared.timeMs }),
           width: prepared.width,
           ...(raw.background === undefined
@@ -1218,9 +1239,31 @@ scoutOptions(
 
 program
   .command("doctor")
-  .description("diagnose Chromium, WebGL, and local-render execution readiness")
-  .action(async () => {
+  .description(
+    "diagnose Chromium, WebGL, WebGPU, and local-render execution readiness"
+  )
+  .option(
+    "--require-backend <any|webgl|webgpu|both>",
+    "fail unless the requested graphics capability is available",
+    "any"
+  )
+  .action(async (raw: { requireBackend: string }) => {
     const report = await diagnoseBrowser();
+    const requirement = z
+      .enum(["any", "webgl", "webgpu", "both"])
+      .parse(raw.requireBackend);
+    let requirementMet = report.checks.webgpuAvailable;
+    if (requirement === "any") {
+      requirementMet =
+        report.checks.webglAvailable || report.checks.webgpuAvailable;
+    } else if (requirement === "both") {
+      requirementMet =
+        report.checks.webglAvailable && report.checks.webgpuAvailable;
+    } else if (requirement === "webgl") {
+      requirementMet = report.checks.webglAvailable;
+    }
+    report.success = report.success && requirementMet;
+    Object.assign(report, { requiredBackend: requirement, requirementMet });
     output(report);
     if (!report.success) {
       process.exitCode = 1;
