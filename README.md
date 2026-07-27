@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ReyJ94/SceneProof/releases/tag/v0.3.0"><img alt="Release v0.3.0" src="https://img.shields.io/badge/release-v0.3.0-E6A34D?style=flat-square" /></a>
+  <a href="https://github.com/ReyJ94/SceneProof/releases/tag/v0.4.0"><img alt="Release v0.4.0" src="https://img.shields.io/badge/release-v0.4.0-E6A34D?style=flat-square" /></a>
 </p>
 
 SceneProof lets coding agents see the interfaces and Three.js scenes they
@@ -20,8 +20,13 @@ build. It reconstructs the real source, exposes the structure that explains the
 render, and produces exactly the context or detail view needed for reliable
 visual judgment.
 
-Agents can finally recognize what they made, understand why it looks wrong, and
-prove that it is visually finished—instead of coding UI and 3D blind.
+Agents can recognize what they made, understand why it looks wrong, and ground
+their final judgment in falsifiable visual evidence—instead of coding UI and 3D
+blind.
+
+**New in v0.4.0:** distinguish execution from visual acceptance, derive typed
+React prop fixtures, compare targets in context and isolation, assert delivery
+scale, and expose amplified motion and fitted-silhouette evidence.
 
 **New in v0.3.0:** compare renders with supplied references, measure silhouette
 and luminance deltas, probe exact subject-relative pixels, bracket fixture
@@ -141,22 +146,56 @@ when the image already presents the evidence that matters.
 | Understand 3D form | Source, fitted, filled, or alternate camera views |
 | Find useful evidence quickly | A one-lifecycle Scout portfolio for context, source detail, close detail, and shape |
 | Compare an interaction | Deterministic before/time/settled frames from one bundle and one live scene |
+| Compare an implementation revision | A same-size previous/current contact sheet and amplified difference map |
 | Match a supplied reference | Aligned silhouette, paired luminance, pixel probes, unaligned composition, and explicit-mask provenance |
 | Bracket a fixture parameter | One-variable contact sheets ranked by an explicit geometry, appearance, composition, or balanced objective |
 | Constrain a 3D form from several views | A labeled reference manifest evaluated per camera in one browser and one bundle |
 | Preserve model context | Compact briefings with lossless evidence available by path only when needed |
 
-SceneProof keeps two accounts of the result:
+SceneProof keeps three accounts of every visual result:
+
+- **Execution:** whether SceneProof completed the requested work and persisted
+  the declared artifacts. The legacy top-level `success` field means only this.
+- **Evidence:** which claims the artifact can actually support: `judgeable`,
+  `partially-judgeable`, `unjudgeable`, or `not-requested`.
+- **Assessment:** who owns the decision and its current verdict. Automated
+  constraints such as motion or delivery scale may pass or fail directly;
+  reference matching remains an agent-owned judgment.
+
+A successful command is therefore not a successful design:
+
+```json
+{
+  "success": true,
+  "execution": { "status": "succeeded", "meaning": "command-execution-only" },
+  "evidence": { "status": "judgeable" },
+  "assessment": {
+    "decisionOwner": "agent",
+    "verdict": "review-required"
+  }
+}
+```
+
+When `--reference` is supplied, SceneProof aligns and measures the subjects and
+produces a reference/current/difference contact sheet plus a silhouette overlay
+and amplified difference map. It does not turn a similarity score into a taste
+verdict. The agent must inspect those artifacts, reconcile the silhouette,
+composition, luminance, and probe deltas with the intended claim, and decide
+whether the implementation passes. If subject extraction or dynamic range is
+inadequate, the result is `unjudgeable`; the agent must not claim a match.
+
+Within that status contract, SceneProof preserves two complementary forms of
+evidence:
 
 - **Structural truth:** what the source produced—hierarchy, identity, bounds,
   transforms, styles, geometry, materials, lights, cameras, and visibility.
 - **Perceptual truth:** what the result presents—composition, hierarchy,
   silhouette, depth, density, contrast, clipping, and small-scale detail.
 
-The render reveals that something is wrong. The structure often reveals why.
-Neither replaces the other.
+The render exposes the visible result. When it is wrong, the structure often
+reveals why. Neither replaces the other.
 
-`inspect` and `scout` return compact, decision-complete briefings. Warnings,
+`inspect` and `scout` return compact, decision-oriented briefings. Warnings,
 target identity, omission counts, provenance, and the next useful evidence stay
 inline. Exact lossless JSON is written automatically and exposed through
 `evidence.full.path`; the agent opens it only when an omitted fact can change
@@ -199,6 +238,7 @@ aggregate never substitutes one perspective for another.
 | --- | --- |
 | `tree` | Navigate semantic structure |
 | `node` | Inspect one exact target and its immediate relationships |
+| `props` | Derive a typed JSON skeleton for a React component export |
 | `inspect` | Reconstruct the source and preserve the canonical scene artifact |
 | `scout` | Discover useful Three.js target cameras in one scene lifecycle |
 | `render` | Produce fresh context or target evidence |
@@ -208,25 +248,6 @@ aggregate never substitutes one perspective for another.
 SceneProof owns renderer setup and evidence persistence. The agent chooses the
 real source boundary, declared state, semantic target, framing, and evidence
 needed to resolve the uncertainty.
-
-## First visual proof
-
-The included object-gallery scene is self-contained:
-
-```bash
-sceneproof tree examples/three/object-gallery.ts \
-  --export createScene
-
-sceneproof scout examples/three/object-gallery.ts \
-  three:collection \
-  --export createScene \
-  --focus-node three:featured-model \
-  --out artifacts/object-gallery-scout
-```
-
-Open `artifacts/object-gallery-scout/contact-sheet.png`. The compact Scout
-briefing explains whether framing or raster resolution is limiting and provides
-reproducible commands for the useful alternatives.
 
 ## Inspecting application source
 
@@ -256,21 +277,42 @@ SceneProof accepts a named component export, deterministic JSON props, source
 CSS, workspace aliases, and Tailwind v4 styles:
 
 ```bash
-sceneproof tree tests/fixtures/DemoCard.tsx \
+sceneproof tree src/components/DemoCard.tsx \
   --export DemoCard \
-  --props tests/fixtures/props.json
+  --props fixtures/demo-card.json
 
-sceneproof node tests/fixtures/DemoCard.tsx \
+sceneproof node src/components/DemoCard.tsx \
   dom:demo-card \
   --export DemoCard \
-  --props tests/fixtures/props.json
+  --props fixtures/demo-card.json
 
-sceneproof render tests/fixtures/DemoCard.tsx \
+sceneproof render src/components/DemoCard.tsx \
   dom:demo-card \
   --export DemoCard \
-  --props tests/fixtures/props.json \
+  --props fixtures/demo-card.json \
   --scale 4 \
   --out artifacts/demo-card.png
+```
+
+For a typed production component whose props are not yet available as a
+fixture, derive the shape instead of reverse-engineering an intersection type
+by hand:
+
+```bash
+sceneproof props src/PricingPanel.tsx \
+  --export PricingPanel \
+  --out scripts/sceneproof/fixtures/pricing-panel.json
+```
+
+`--partial-props` may then deep-complete a supplied partial object with explicit
+typed placeholders. Reports list every synthesized and unsupported path, so a
+placeholder cannot be mistaken for real application state:
+
+```bash
+sceneproof inspect src/PricingPanel.tsx \
+  --export PricingPanel \
+  --props partial-pricing-panel.json \
+  --partial-props
 ```
 
 Use `render-region` when the surrounding viewport coordinate system matters.
@@ -329,6 +371,24 @@ sceneproof render scripts/sceneproof/gallery.scene.ts \
   --out artifacts/select-transition.png
 ```
 
+For a target whose fixture declares relevant surrounding objects, capture the
+context and isolated form from the same live scene rather than approving a form
+against an empty background:
+
+```bash
+sceneproof render scripts/sceneproof/gallery.scene.ts \
+  three:featured-item \
+  --export createGalleryEvidence \
+  --context-pair \
+  --delivery-scale 300 \
+  --out artifacts/item-context-pair
+```
+
+The report states whether context was declared, the actual target height in
+pixels, and whether it satisfied the requested delivery scale. `--in-context`
+and `--isolated` select either view independently; `--isolated` is an alias for
+`--isolate`, and isolation preserves lights.
+
 For the exact lifecycle, semantic target, instance ID, camera, and diagnostic
 contracts, read [the Three.js fixture protocol](docs/three-fixtures.md).
 
@@ -347,11 +407,18 @@ SceneProof currently supports:
   and single-lifecycle frame sequences;
 - full-quality source rerendering, target-aware camera control, bounded source
   region rendering, information-gain Scout portfolios, and compact evidence
-  briefings.
+  briefings;
+- reference/current/difference comparison, amplified adjacent-frame
+  differences, fitted-spline silhouette deviation, context/isolated pairs, and
+  delivery-scale assertions;
+- typed React prop skeletons and explicitly provenance-marked partial-prop
+  completion.
 
-SVG-native export and before/after `compare` are not implemented yet. The Bun
-compiled binary is experimental for arbitrary workspace entries with nested
-package imports; linked source mode is the supported development path.
+Three.js capture currently targets `WebGLRenderer`; `WebGPURenderer` and WebGPU
+fixture support are not implemented. SVG-native export is also not implemented.
+The GitHub installation uses SceneProof's linked source entry. The standalone
+Bun compiled binary remains experimental for arbitrary workspace entries with
+nested package imports.
 
 ## Development
 
@@ -375,7 +442,8 @@ bun run check
 ```
 
 The public gate runs lint, strict TypeScript 7 typechecking, the self-contained
-browser-backed test harness, and the Bun compiled build.
+browser-backed test harness, the Bun compiled build, and a compiled typed-props
+smoke test.
 
 </details>
 

@@ -1,5 +1,41 @@
 # Changelog
 
+## [0.4.0] - 2026-07-27
+
+### Added
+
+- Explicit `execution`, `evidence`, and `assessment` result layers. The legacy
+  `success` field now has documented command-execution-only meaning; reference
+  acceptance remains an agent-owned artifact comparison rather than an
+  automatic similarity pass.
+- Typed React props skeleton generation through `sceneproof props`, plus
+  provenance-marked `--partial-props` completion for real component exports.
+- Fixture-declared context members, one-lifecycle `--context-pair` evidence,
+  symmetric `--in-context` and `--isolated` controls, and delivery-scale
+  assertions based on logical target height.
+- Fitted-spline silhouette deviation and persisted amplified difference panels
+  for every adjacent frame pair.
+
+### Changed
+
+- Render, frame, region, Scout, sweep, and multi-view reference reports now
+  distinguish successful artifact production from judgeability and visual
+  outcome. Null motion, absent sweep variation, and missed delivery scale can
+  fail their assertion while execution remains successful.
+- TypeScript is now a runtime dependency because typed props inference uses the
+  TypeScript 7 asynchronous compiler API.
+- Removed the illustrative `examples/three` scene; reusable evidence fixtures
+  should import a project's real visual owner under `scripts/sceneproof`.
+
+### Fixed
+
+- Compiled binaries run TypeScript analysis through the shipped source worker,
+  keeping TypeScript's native executable and package-import resolution on the
+  real filesystem instead of Bun's virtual bundle filesystem.
+- Runtime dependencies resolve from both nested and normally hoisted Bun
+  installation layouts; a clean tarball install no longer fails to find
+  `esbuild` beside the SceneProof package.
+
 ## [0.3.0] - 2026-07-27
 
 SceneProof now turns a supplied visual target into measurable evidence rather
@@ -76,6 +112,7 @@ of an uninformative image.
 Initial public release with source-grounded React and Three.js inspection,
 structural evidence, focused rerendering, and Scout camera discovery.
 
+[0.4.0]: https://github.com/ReyJ94/SceneProof/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/ReyJ94/SceneProof/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ReyJ94/SceneProof/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ReyJ94/SceneProof/releases/tag/v0.1.0

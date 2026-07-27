@@ -1,6 +1,6 @@
 {
   "name": "sceneproof",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Source-grounded visual perception for coding agents—inspect, focus, and verify UI and 3D work at full quality.",
   "private": false,
   "license": "MIT",
