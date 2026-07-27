@@ -1,6 +1,6 @@
 {
   "name": "sceneproof",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Source-grounded visual perception for coding agents—inspect, focus, and verify UI and 3D work at full quality.",
   "private": false,
   "license": "MIT",
@@ -46,7 +46,7 @@
     "lint": "ultracite check .",
     "lint:fix": "ultracite fix .",
     "prepack": "bun run check",
-    "test": "bun test --timeout 30000 tests/cli.test.ts tests/react-renderer.test.ts",
+    "test": "bun test --timeout 30000 tests/cli.test.ts tests/react-renderer.test.ts tests/source-bundle.test.ts",
     "test:cli": "bun test --timeout 30000 tests/cli.test.ts",
     "typecheck": "tsc --noEmit"
   },

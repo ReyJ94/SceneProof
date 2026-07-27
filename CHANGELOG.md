@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.3.0] - 2026-07-27
+
+SceneProof now turns a supplied visual target into measurable evidence rather
+than asking an agent to compare renders from memory.
+
+### Added
+
+- Reference images with explicit masks or bounded automatic extraction,
+  aligned silhouette deltas, paired luminance histograms, normalized pixel
+  probes, and reference/current/difference artifacts.
+- Unaligned reference composition evidence so subject alignment cannot hide
+  incorrect viewport placement or delivery size.
+- One-variable fixture-prop sweeps with adjacent raster-change evidence and
+  explicit `geometry`, `appearance`, `composition`, or `balanced` ranking.
+- Labeled multi-view reference manifests evaluated in one browser and bundle,
+  with per-perspective provenance and non-substituting aggregate fit.
+- Target-only silhouette profiles, raster judgeability gates, comparison maps,
+  motion summaries, and detected rasterizer provenance.
+
+### Fixed
+
+- Isolation preserves Three.js lights instead of silently producing an unlit
+  target.
+- Multi-frame output paths, transient esbuild service failure handling, bare
+  semantic target IDs, Scout flag symmetry, and missing-prop render guidance.
+
 ## [0.2.0] - 2026-07-25
 
 SceneProof now treats useful framing and faithful state reconstruction as the
@@ -50,5 +76,6 @@ of an uninformative image.
 Initial public release with source-grounded React and Three.js inspection,
 structural evidence, focused rerendering, and Scout camera discovery.
 
+[0.3.0]: https://github.com/ReyJ94/SceneProof/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ReyJ94/SceneProof/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ReyJ94/SceneProof/releases/tag/v0.1.0

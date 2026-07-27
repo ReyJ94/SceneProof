@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ReyJ94/SceneProof/releases/tag/v0.2.0"><img alt="Release v0.2.0" src="https://img.shields.io/badge/release-v0.2.0-E6A34D?style=flat-square" /></a>
+  <a href="https://github.com/ReyJ94/SceneProof/releases/tag/v0.3.0"><img alt="Release v0.3.0" src="https://img.shields.io/badge/release-v0.3.0-E6A34D?style=flat-square" /></a>
 </p>
 
 SceneProof lets coding agents see the interfaces and Three.js scenes they
@@ -22,6 +22,10 @@ visual judgment.
 
 Agents can finally recognize what they made, understand why it looks wrong, and
 prove that it is visually finished—instead of coding UI and 3D blind.
+
+**New in v0.3.0:** compare renders with supplied references, measure silhouette
+and luminance deltas, probe exact subject-relative pixels, bracket fixture
+parameters in one sweep, and constrain 3D work from labeled reference views.
 
 ## Install
 
@@ -137,6 +141,9 @@ when the image already presents the evidence that matters.
 | Understand 3D form | Source, fitted, filled, or alternate camera views |
 | Find useful evidence quickly | A one-lifecycle Scout portfolio for context, source detail, close detail, and shape |
 | Compare an interaction | Deterministic before/time/settled frames from one bundle and one live scene |
+| Match a supplied reference | Aligned silhouette, paired luminance, pixel probes, unaligned composition, and explicit-mask provenance |
+| Bracket a fixture parameter | One-variable contact sheets ranked by an explicit geometry, appearance, composition, or balanced objective |
+| Constrain a 3D form from several views | A labeled reference manifest evaluated per camera in one browser and one bundle |
 | Preserve model context | Compact briefings with lossless evidence available by path only when needed |
 
 SceneProof keeps two accounts of the result:
@@ -157,6 +164,34 @@ the decision.
 
 Piped output is compact JSON for model efficiency. Interactive terminal output
 remains formatted for humans.
+
+Reference comparison deliberately keeps different claims separate. Aligned
+silhouette evidence measures projected shape independent of placement;
+`reference.composition` reports the original viewport center and size deltas;
+paired histograms and repeatable `--probe x,y` samples measure appearance.
+`--sweep-objective geometry|appearance|composition|balanced` chooses which of
+those facts may rank a one-variable `--sweep`.
+
+When independent perspectives are available, declare them instead of asking a
+single hero image to prove unseen geometry:
+
+```json
+{
+  "references": [
+    { "label": "hero", "view": "original", "path": "hero.png", "maskPath": "hero-mask.png" },
+    { "label": "side", "view": "side", "path": "side.png", "maskPath": "side-mask.png" }
+  ]
+}
+```
+
+```bash
+sceneproof render scripts/sceneproof/monument.scene.ts three:monument \
+  --reference-set references.json \
+  --out artifacts/monument-reference-set
+```
+
+Each labeled view retains its own camera, mask, artifacts, and score. The
+aggregate never substitutes one perspective for another.
 
 ## Agent-facing surface
 

@@ -181,6 +181,42 @@ appropriate only after the target already occupies an informative portion of
 the frame. Open the contact sheet and judge the alternatives; the numeric
 ranking narrows inspection but does not replace visual judgment.
 
+## Reference, comparison, and sweep evidence
+
+Use `--reference` when a supplied raster is the design constraint. Automatic
+subject extraction withholds numeric claims when confidence is low; use an
+exact same-sized `--reference-mask` for complex backgrounds. The report keeps:
+
+- aligned silhouette IoU, aspect ratio, widest-point height, and tip angle;
+- paired subject luminance p10, p50, p90, and maximum;
+- repeatable normalized subject-space `--probe x,y` samples and local
+  same-colour run widths;
+- unaligned viewport composition center and size deltas;
+- reference, mask, region, and generated-artifact provenance.
+
+`--sweep prop.path=a,b,c` creates fresh scene instances in one browser and one
+bundle. With a reference, declare the ranking contract explicitly:
+
+```bash
+sceneproof render scene.ts three:subject \
+  --reference target.png \
+  --reference-mask target-mask.png \
+  --sweep roughness=0.35,0.5,0.65 \
+  --sweep-objective appearance \
+  --out artifacts/roughness-sweep.png
+```
+
+The four objectives are `geometry`, `appearance`, `composition`, and
+`balanced`. A recommendation is only the best candidate under that declared
+evidence contract; it is not a taste verdict.
+
+For genuinely different supplied perspectives, use `--reference-set` with a
+JSON manifest containing two to eight labeled entries. Each entry may declare
+`view`, `framing`, `zoom`, `path`, `maskPath`, `region`, and `probes`. Relative
+paths resolve from the manifest. SceneProof uses one browser and one bundle,
+creates one attributable scene per view, and reports each comparison separately
+before computing the mean balanced fit.
+
 ## Execution diagnostics
 
 SceneProof requires local Chromium and WebGL. In an agent sandbox, invoke it as
