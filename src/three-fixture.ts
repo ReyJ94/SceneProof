@@ -28,6 +28,7 @@ export type ThreeSemanticTargetMember =
 
 export type ThreeSemanticTarget = {
   bounds?: Box3 | (() => Box3);
+  context?: ThreeSemanticTargetMember[];
   focus?: Vector3 | (() => Vector3);
   id: string;
   isolate?: () => void;

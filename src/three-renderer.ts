@@ -4,6 +4,11 @@ import { basename, dirname, extname, join, resolve } from "node:path";
 import { launchBrowser, mountBundle } from "./browser-runtime.js";
 import { compareRenderToReference } from "./reference-comparison.js";
 import {
+  agentReviewStatus,
+  frameStatus,
+  renderStatus,
+} from "./report-status.js";
+import {
   type FrameRenderReport,
   type LogicalRegion,
   type RasterizerInfo,
@@ -21,6 +26,11 @@ import { bundleBrowserDriver } from "./source-bundle.js";
 export type FixtureProvenance = {
   action: { inputPath?: string; name: string } | null;
   props: { digest: string; path: string } | null;
+  propsCompletion?: {
+    mode: "typed-placeholders";
+    synthesizedPaths: string[];
+    unsupportedPaths: string[];
+  };
   timeMs: number | null;
 };
 
@@ -37,6 +47,8 @@ type ThreeOptions = {
   isolate?: boolean;
   background?: string;
   compare?: string;
+  deliveryScale?: number;
+  deliveryTolerance?: number;
   out?: string;
   nodeId?: string;
   view?: ThreeTargetView;
@@ -45,8 +57,10 @@ type ThreeOptions = {
   fixture?: FixtureProvenance;
   framing?: ThreeFraming;
   margin?: number;
+  inContext?: boolean;
   props: Record<string, unknown>;
   preparedPage?: import("playwright-core").Page;
+  preserveFixture?: boolean;
   reference?: {
     maskPath?: string;
     path: string;
@@ -542,7 +556,7 @@ function sourceRegionCommand(input: {
   ].join(" ");
 }
 
-function driverSource(input: ThreeOptions): string {
+export function driverSource(input: ThreeOptions): string {
   return `
     import * as THREE from "three";
     import * as SourceModule from ${JSON.stringify(input.entry)};
@@ -1214,13 +1228,17 @@ export async function renderThree(
       | "actionInput"
       | "background"
       | "compare"
+      | "deliveryScale"
+      | "deliveryTolerance"
       | "fixture"
       | "focus"
       | "framing"
+      | "inContext"
       | "isolate"
       | "margin"
       | "props"
       | "preparedPage"
+      | "preserveFixture"
       | "reference"
       | "silhouette"
       | "stats"
@@ -1253,6 +1271,7 @@ export async function renderThree(
         width,
         height,
         scale,
+        inContext,
         isolate,
         background,
         view,
@@ -1273,6 +1292,10 @@ export async function renderThree(
             scene: import("three").Scene;
             targets?: Array<{
               bounds?: import("three").Box3 | (() => import("three").Box3);
+              context?: Array<{
+                instanceId?: number;
+                object: import("three").Object3D;
+              }>;
               focus?: import("three").Vector3 | (() => import("three").Vector3);
               id: string;
               isolate?: () => void;
@@ -1331,6 +1354,7 @@ export async function renderThree(
           }
         });
         const semanticMembers = descriptor?.members ?? implicitMembers;
+        const declaredContextMembers = descriptor?.context ?? [];
         if (!(selectedTarget || descriptor || semanticMembers.length > 0)) {
           throw new Error(`Target node not found: ${nodeId}`);
         }
@@ -1444,6 +1468,24 @@ export async function renderThree(
                 (member) => contains(object, member) || contains(member, object)
               );
           });
+        } else if (inContext && declaredContextMembers.length > 0) {
+          const memberObjects = [
+            ...semanticMembers.map((member) => member.object),
+            ...declaredContextMembers.map((member) => member.object),
+          ];
+          if (selectedTarget) {
+            memberObjects.push(selectedTarget);
+          }
+          result.scene.traverse((object) => {
+            if (object === result.scene) {
+              return;
+            }
+            object.visible =
+              Reflect.get(object, "isLight") === true ||
+              memberObjects.some(
+                (member) => contains(object, member) || contains(member, object)
+              );
+          });
         }
         let lightsPreserved = 0;
         if (isolate) {
@@ -1483,12 +1525,19 @@ export async function renderThree(
           (object) => !targetRenderables.has(object)
         ).length;
         const environmentPresent = result.scene.environment !== null;
+        let contextSource: "declared" | "isolated" | "scene" = "scene";
+        if (isolate) {
+          contextSource = "isolated";
+        } else if (inContext && declaredContextMembers.length > 0) {
+          contextSource = "declared";
+        }
         const contextEvidence = {
           backgroundPresent:
             background !== null || result.scene.background !== null,
           contextRenderableCount,
           empty: contextRenderableCount === 0 && !environmentPresent,
           environmentPresent,
+          source: contextSource,
           targetRenderableCount: targetRenderables.size,
           totalRenderableCount: visibleRenderables.length,
         };
@@ -1646,7 +1695,9 @@ export async function renderThree(
               profile: {
                 curvatureSignChanges: number;
                 highFrequencyDirectionReversals: number;
+                maximumDeviationFromFittedSplinePx: number;
                 maximumDeviationFromLocalTrendPx: number;
+                splineAlgorithm: "reduced-knot-catmull-rom";
               };
               targetMeshCount: number;
             }
@@ -1788,8 +1839,68 @@ export async function renderThree(
             ];
             let curvatureSignChanges = 0;
             let highFrequencyDirectionReversals = 0;
+            let maximumDeviationFromFittedSplinePx = 0;
             let maximumDeviationFromLocalTrendPx = 0;
+            const fittedSplineSegmentDeviation = (
+              profile: number[],
+              knotIndices: number[],
+              knot: number
+            ): number => {
+              const start = knotIndices[knot] ?? 0;
+              const end = knotIndices[knot + 1] ?? start;
+              const p0 =
+                profile[knotIndices[Math.max(0, knot - 1)] ?? start] ?? 0;
+              const p1 = profile[start] ?? 0;
+              const p2 = profile[end] ?? p1;
+              const p3 =
+                profile[
+                  knotIndices[Math.min(knotIndices.length - 1, knot + 2)] ?? end
+                ] ?? p2;
+              let maximum = 0;
+              for (let index = start; index <= end; index += 1) {
+                const t = (index - start) / Math.max(1, end - start);
+                const t2 = t * t;
+                const t3 = t2 * t;
+                const fitted =
+                  0.5 *
+                  (2 * p1 +
+                    (-p0 + p2) * t +
+                    (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 +
+                    (-p0 + 3 * p1 - 3 * p2 + p3) * t3);
+                maximum = Math.max(
+                  maximum,
+                  Math.abs((profile[index] ?? fitted) - fitted)
+                );
+              }
+              return maximum;
+            };
+            const fittedSplineDeviation = (profile: number[]): number => {
+              if (profile.length < 8) {
+                return 0;
+              }
+              const knotCount = Math.min(
+                12,
+                Math.max(4, Math.floor(profile.length / 8))
+              );
+              const knotIndices = Array.from(
+                { length: knotCount },
+                (_, index) =>
+                  Math.round((index * (profile.length - 1)) / (knotCount - 1))
+              );
+              let maximum = 0;
+              for (let knot = 0; knot < knotIndices.length - 1; knot += 1) {
+                maximum = Math.max(
+                  maximum,
+                  fittedSplineSegmentDeviation(profile, knotIndices, knot)
+                );
+              }
+              return maximum;
+            };
             for (const profile of profiles) {
+              maximumDeviationFromFittedSplinePx = Math.max(
+                maximumDeviationFromFittedSplinePx,
+                fittedSplineDeviation(profile)
+              );
               let priorDirection = 0;
               let priorCurvature = 0;
               for (let index = 1; index < profile.length; index += 1) {
@@ -1856,7 +1967,9 @@ export async function renderThree(
               profile: {
                 curvatureSignChanges,
                 highFrequencyDirectionReversals,
+                maximumDeviationFromFittedSplinePx,
                 maximumDeviationFromLocalTrendPx,
+                splineAlgorithm: "reduced-knot-catmull-rom",
               },
               targetMeshCount: targetMeshes.length,
             };
@@ -1944,6 +2057,7 @@ export async function renderThree(
         focus: options.focus ?? null,
         framing: options.framing ?? "source",
         height: options.height,
+        inContext: options.inContext ?? false,
         isolate: options.isolate ?? false,
         margin: options.margin ?? 0.12,
         nodeId: options.nodeId,
@@ -2045,6 +2159,19 @@ export async function renderThree(
       rasterStats.sampleLuminance.p90 - rasterStats.sampleLuminance.p10;
     const surfaceJudgeable =
       surfaceLuminanceSpread >= SURFACE_LUMINANCE_SPREAD_THRESHOLD;
+    const deliveryScale = options.deliveryScale
+      ? {
+          actualHeightPx: rendered.targetScreenBounds.height / options.scale,
+          requestedHeightPx: options.deliveryScale,
+          satisfied:
+            Math.abs(
+              rendered.targetScreenBounds.height / options.scale -
+                options.deliveryScale
+            ) <=
+            options.deliveryScale * (options.deliveryTolerance ?? 0.05),
+          toleranceFraction: options.deliveryTolerance ?? 0.05,
+        }
+      : undefined;
     let limitingFactor: "contrast" | "dispersion" | "framing" | null = null;
     if (rendered.targetProjectedCoverage < 0.05) {
       limitingFactor = "framing";
@@ -2057,6 +2184,7 @@ export async function renderThree(
       limitingFactor = "dispersion";
     }
     const quality = {
+      ...(deliveryScale ? { deliveryScale } : {}),
       explanation:
         rendered.camera.framing === "source"
           ? "The target was located for diagnostics, but the literal fixture camera was preserved; use --framing fit or --view when target framing is intended."
@@ -2099,6 +2227,11 @@ export async function renderThree(
             "The target was rendered without other renderable scene context or an environment; isolation is useful for identification but insufficient for contextual approval.",
           ]
         : []),
+      ...(deliveryScale && !deliveryScale.satisfied
+        ? [
+            `Target delivery height is ${deliveryScale.actualHeightPx.toFixed(1)}px, outside ${deliveryScale.requestedHeightPx}px ± ${(deliveryScale.toleranceFraction * 100).toFixed(1)}%.`,
+          ]
+        : []),
       ...(rendered.rendererName.toLowerCase().includes("swiftshader")
         ? [
             "Rendering used SwiftShader CPU rasterization; this artifact is not GPU performance evidence.",
@@ -2113,7 +2246,6 @@ export async function renderThree(
         Math.round(options.height * options.scale);
     const checks = {
       boundsValid: rendered.boundsValid,
-      evidenceJudgeable: quality.judgeable,
       exportFound: true,
       moduleLoaded: true,
       outputNonempty,
@@ -2135,8 +2267,18 @@ export async function renderThree(
       }
       Reflect.deleteProperty(window, "__UISCENE_OUTPUT_RENDERER__");
     });
-    await disposeThree(runtime.page);
+    if (!options.preserveFixture) {
+      await disposeThree(runtime.page);
+    }
+    const executionSucceeded = Object.values(checks).every(Boolean);
+    const status = renderStatus({
+      ...(deliveryScale ? { deliveryScale } : {}),
+      executionSucceeded,
+      quality,
+      ...(referenceComparison ? { reference: referenceComparison.report } : {}),
+    });
     return {
+      ...status,
       artifact: output,
       camera: {
         ...rendered.camera,
@@ -2166,7 +2308,7 @@ export async function renderThree(
             },
           }
         : {}),
-      success: Object.values(checks).every(Boolean),
+      success: executionSucceeded,
       timingsMs: {
         capture: captureMs,
         render: rendered.renderMs,
@@ -2600,6 +2742,7 @@ export async function renderThreeFrames(
         const comparisons: Array<{
           changedPixelFraction: number;
           classification: "below-perceptual-floor" | "changed" | "identical";
+          differenceIndex: number;
           from: string;
           normalizedRasterDelta: number;
           to: string;
@@ -2706,6 +2849,25 @@ export async function renderThreeFrames(
           if (previousPixels && previousLabel) {
             let absoluteDelta = 0;
             let changedPixels = 0;
+            const difference = document.createElement("canvas");
+            difference.dataset.sceneproofFrameDifferenceIndex = String(
+              comparisons.length
+            );
+            difference.height = renderedHeight;
+            difference.width = renderedWidth;
+            difference.style.display = "block";
+            difference.style.height = `${renderedHeight}px`;
+            difference.style.width = `${renderedWidth}px`;
+            const differenceContext = difference.getContext("2d");
+            if (!differenceContext) {
+              throw new Error(
+                "A 2D canvas is required for amplified frame differences."
+              );
+            }
+            const differenceImage = differenceContext.createImageData(
+              renderedWidth,
+              renderedHeight
+            );
             for (let offset = 0; offset < pixels.length; offset += 4) {
               const redDelta = Math.abs(
                 (pixels[offset] ?? 0) - (previousPixels[offset] ?? 0)
@@ -2717,6 +2879,10 @@ export async function renderThreeFrames(
                 (pixels[offset + 2] ?? 0) - (previousPixels[offset + 2] ?? 0)
               );
               absoluteDelta += redDelta + greenDelta + blueDelta;
+              differenceImage.data[offset] = Math.min(255, redDelta * 4);
+              differenceImage.data[offset + 1] = Math.min(255, greenDelta * 4);
+              differenceImage.data[offset + 2] = Math.min(255, blueDelta * 4);
+              differenceImage.data[offset + 3] = 255;
               if (Math.max(redDelta, greenDelta, blueDelta) > 2) {
                 changedPixels += 1;
               }
@@ -2740,10 +2906,20 @@ export async function renderThreeFrames(
             comparisons.push({
               changedPixelFraction,
               classification,
+              differenceIndex: comparisons.length,
               from: previousLabel,
               normalizedRasterDelta,
               to: token.label,
             });
+            differenceContext.putImageData(differenceImage, 0, 0);
+            const differenceCard = document.createElement("section");
+            differenceCard.style.background = "#121621";
+            differenceCard.style.border = "1px solid #252b3a";
+            const differenceLabel = document.createElement("div");
+            differenceLabel.style.padding = "8px 10px";
+            differenceLabel.textContent = `${previousLabel} → ${token.label} difference (4x)`;
+            differenceCard.append(difference, differenceLabel);
+            sheet.append(differenceCard);
           }
           previousPixels = new Uint8ClampedArray(pixels);
           previousLabel = token.label;
@@ -2814,6 +2990,30 @@ export async function renderThreeFrames(
         timeMs: frame.timeMs,
       });
     }
+    const comparisons: FrameRenderReport["comparisons"] = [];
+    for (const [index, comparison] of rendered.comparisons.entries()) {
+      const artifact = join(
+        directory,
+        `difference-${String(index + 1).padStart(2, "0")}.png`
+      );
+      // biome-ignore lint/performance/noAwaitInLoops: Each adjacent pair owns one attributable amplified difference artifact.
+      await runtime.page
+        .locator(
+          `canvas[data-sceneproof-frame-difference-index="${comparison.differenceIndex}"]`
+        )
+        .screenshot({
+          animations: "disabled",
+          caret: "hide",
+          path: artifact,
+          scale: "css",
+          timeout: 120_000,
+        });
+      const { differenceIndex: _differenceIndex, ...metrics } = comparison;
+      comparisons.push({
+        ...metrics,
+        artifacts: { amplifiedDifference: artifact },
+      });
+    }
     await runtime.page
       .locator("main[data-sceneproof-frames='true']")
       .screenshot({
@@ -2824,7 +3024,7 @@ export async function renderThreeFrames(
         timeout: 120_000,
       });
     const manifest = join(directory, "frames.json");
-    const motionDetected = rendered.comparisons.some(
+    const motionDetected = comparisons.some(
       (comparison) => comparison.classification === "changed"
     );
     const warnings = [
@@ -2836,7 +3036,7 @@ export async function renderThreeFrames(
             "The requested action sequence contains no visual transition above the reported perceptual floor.",
           ]
         : []),
-      ...rendered.comparisons.flatMap((comparison) => {
+      ...comparisons.flatMap((comparison) => {
         if (comparison.classification === "identical") {
           return [
             `Frames ${comparison.from} and ${comparison.to} are pixel-identical.`,
@@ -2856,8 +3056,18 @@ export async function renderThreeFrames(
         requested: Boolean(options.action),
       },
       artifacts: { contactSheet, directory, manifest },
+      assessment: {
+        decisionOwner: "agent",
+        reasons: [],
+        verdict: "not-requested",
+      },
       command: "render-frames",
-      comparisons: rendered.comparisons,
+      comparisons,
+      evidence: { claims: {}, reasons: [], status: "not-requested" },
+      execution: {
+        meaning: "command-execution-only",
+        status: "failed",
+      },
       frames,
       lifecycle: {
         actions: options.action ? 1 : 0,
@@ -2885,8 +3095,15 @@ export async function renderThreeFrames(
           frames.map(async (frame) => (await stat(frame.artifact)).size > 0)
         )
       ).every(Boolean);
-    report.success =
-      artifactsComplete && (!options.action || report.quality.motionDetected);
+    report.success = artifactsComplete;
+    Object.assign(
+      report,
+      frameStatus({
+        executionSucceeded: artifactsComplete,
+        motionDetected: report.quality.motionDetected,
+        motionRequested: Boolean(options.action),
+      })
+    );
     await writeFile(manifest, `${JSON.stringify(report, null, 2)}\n`);
     await runtime.page.evaluate(() => {
       const output = Reflect.get(window, "__UISCENE_FRAMES_RENDERER__") as
@@ -3077,7 +3294,14 @@ export async function renderThreeRegion(
       Reflect.deleteProperty(window, "__UISCENE_OUTPUT_RENDERER__");
     });
     await disposeThree(runtime.page);
+    const executionSucceeded = Object.values(checks).every(Boolean);
     return {
+      ...agentReviewStatus({
+        evidenceJudgeable: true,
+        executionSucceeded,
+        reason:
+          "The Three.js region was rerendered from source; the agent must inspect it before making a visual-quality claim.",
+      }),
       artifact: output,
       checks,
       ...(options.fixture ? { fixture: options.fixture } : {}),
@@ -3099,7 +3323,7 @@ export async function renderThreeRegion(
             },
           }
         : {}),
-      success: Object.values(checks).every(Boolean),
+      success: executionSucceeded,
       timingsMs: {
         capture: captureMs,
         render: rendered.renderMs,
@@ -4089,7 +4313,17 @@ export async function scoutThree(
     } else if (targetNode.children.length > 0) {
       targetGranularity = "draw-owner";
     }
+    const executionSucceeded =
+      candidates.length > 0 && (await stat(artifacts.contactSheet)).size > 0;
+    const status = agentReviewStatus({
+      evidenceJudgeable: !structuralWarning && candidates.length > 0,
+      executionSucceeded,
+      reason: structuralWarning
+        ? `Scout evidence is unjudgeable until structural diagnostics are resolved: ${structuralWarning}`
+        : "Scout ranked camera evidence; the agent must inspect the contact sheet before choosing a view or approving the target.",
+    });
     const report: ScoutReport = {
+      ...status,
       artifacts,
       candidates,
       diagnosis,
@@ -4102,8 +4336,7 @@ export async function scoutThree(
       rasterizer: rasterizerInfo(candidatePass.rendererName),
       recommendations,
       recommended,
-      success:
-        candidates.length > 0 && (await stat(artifacts.contactSheet)).size > 0,
+      success: executionSucceeded,
       target: {
         granularity: targetGranularity,
         id: options.nodeId,

@@ -2,6 +2,7 @@ import { mkdir, readFile, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 import { launchBrowser, mountBundle } from "./browser-runtime.js";
+import { agentReviewStatus, artifactReviewStatus } from "./report-status.js";
 import {
   type LogicalRegion,
   type RegionRenderReport,
@@ -396,7 +397,9 @@ export async function renderReact(
       requestedScaleAchieved,
       targetFound: true,
     };
+    const executionSucceeded = Object.values(checks).every(Boolean);
     return {
+      ...artifactReviewStatus(executionSucceeded),
       artifact: output,
       checks,
       logicalSize: {
@@ -406,7 +409,7 @@ export async function renderReact(
       nodeId: options.nodeId,
       renderedSize,
       scale: options.scale,
-      success: Object.values(checks).every(Boolean),
+      success: executionSucceeded,
     };
   } finally {
     await runtime.browser.close();
@@ -445,7 +448,14 @@ export async function renderReactRegion(
         renderedSize.width === expected.width &&
         renderedSize.height === expected.height,
     };
+    const executionSucceeded = Object.values(checks).every(Boolean);
     return {
+      ...agentReviewStatus({
+        evidenceJudgeable: true,
+        executionSucceeded,
+        reason:
+          "The region was rerendered from source; the agent must inspect it before making a visual-quality claim.",
+      }),
       artifact: output,
       checks,
       logicalSize: {
@@ -455,7 +465,7 @@ export async function renderReactRegion(
       region: options.region,
       renderedSize,
       scale: options.scale,
-      success: Object.values(checks).every(Boolean),
+      success: executionSucceeded,
     };
   } finally {
     await runtime.browser.close();

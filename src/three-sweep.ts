@@ -2,17 +2,19 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join, resolve } from "node:path";
 
 import { launchBrowser, mountBundle } from "./browser-runtime.js";
+import {
+  type ReferenceFit,
+  type ReferenceObjective,
+  scoreReferenceFit,
+} from "./reference-fit.js";
+import { agentReviewStatus, assertionStatus } from "./report-status.js";
 import type { SweepRenderReport } from "./scene-schema.js";
 import { bundleBrowserDriver } from "./source-bundle.js";
 import { renderThree } from "./three-renderer.js";
 
 type RenderThreeOptions = Parameters<typeof renderThree>[0];
 
-export type SweepObjective =
-  | "appearance"
-  | "balanced"
-  | "composition"
-  | "geometry";
+export type SweepObjective = ReferenceObjective;
 
 type SweepOptions = Omit<
   RenderThreeOptions,
@@ -25,97 +27,6 @@ type SweepOptions = Omit<
     values: unknown[];
   };
 };
-
-type ReferenceFit = NonNullable<
-  SweepRenderReport["variants"][number]["referenceFit"]
->;
-
-export function scoreReferenceFit(
-  reference: NonNullable<SweepRenderReport["variants"][number]["reference"]>,
-  objective: SweepObjective
-): ReferenceFit | undefined {
-  const { analysisAvailable, histograms, silhouette } = reference;
-  if (!(analysisAvailable && silhouette && histograms)) {
-    return;
-  }
-  const currentLuminance = histograms.current.luminance;
-  const referenceLuminance = histograms.reference.luminance;
-  const luminanceMeanAbsoluteDelta =
-    (Math.abs(currentLuminance.p10 - referenceLuminance.p10) +
-      Math.abs(currentLuminance.p50 - referenceLuminance.p50) +
-      Math.abs(currentLuminance.p90 - referenceLuminance.p90)) /
-    3;
-  const components = {
-    aspectRatio:
-      1 -
-      Math.min(
-        1,
-        Math.abs(silhouette.aspectRatio.delta) /
-          Math.max(0.01, Math.abs(silhouette.aspectRatio.reference))
-      ),
-    composition: reference.composition
-      ? 1 -
-        Math.min(
-          1,
-          (Math.abs(reference.composition.delta.center[0]) +
-            Math.abs(reference.composition.delta.center[1]) +
-            Math.abs(reference.composition.delta.size[0]) +
-            Math.abs(reference.composition.delta.size[1])) /
-            4
-        )
-      : 0,
-    luminance: 1 - Math.min(1, luminanceMeanAbsoluteDelta),
-    silhouetteIoU: silhouette.areaIoU,
-    tipConvergence:
-      1 - Math.min(1, Math.abs(silhouette.tipConvergenceAngle.delta) / 90),
-    widestPoint:
-      1 - Math.min(1, Math.abs(silhouette.widestPointHeightFraction.delta)),
-  };
-  const weights = {
-    appearance: {
-      aspectRatio: 0,
-      composition: 0,
-      luminance: 1,
-      silhouetteIoU: 0,
-      tipConvergence: 0,
-      widestPoint: 0,
-    },
-    balanced: {
-      aspectRatio: 0.1,
-      composition: 0.1,
-      luminance: 0.2,
-      silhouetteIoU: 0.45,
-      tipConvergence: 0.05,
-      widestPoint: 0.1,
-    },
-    composition: {
-      aspectRatio: 0,
-      composition: 1,
-      luminance: 0,
-      silhouetteIoU: 0,
-      tipConvergence: 0,
-      widestPoint: 0,
-    },
-    geometry: {
-      aspectRatio: 0.15,
-      composition: 0,
-      luminance: 0,
-      silhouetteIoU: 0.65,
-      tipConvergence: 0.1,
-      widestPoint: 0.1,
-    },
-  }[objective];
-  return {
-    components,
-    luminanceMeanAbsoluteDelta,
-    objective,
-    score: Object.entries(weights).reduce(
-      (score, [key, weight]) =>
-        score + components[key as keyof typeof components] * weight,
-      0
-    ),
-  };
-}
 
 function referenceEvidence(
   report: Awaited<ReturnType<typeof renderThree>>,
@@ -490,7 +401,26 @@ export async function renderThreeSweep(
       (left, right) => right.referenceFit.score - left.referenceFit.score
     );
   const [best] = ranked;
+  const executionSucceeded =
+    variants.every((variant) => variant.success) &&
+    (await stat(contactSheet)).size > 0;
+  const status = changed
+    ? agentReviewStatus({
+        evidenceJudgeable: true,
+        executionSucceeded,
+        reason: best
+          ? `SceneProof ranked ${options.sweep.objective} reference evidence; the agent must inspect the variants before accepting one.`
+          : "The sweep produced attributable visual variation; the agent must inspect the variants before choosing one.",
+      })
+    : assertionStatus({
+        executionSucceeded,
+        objective: "variation",
+        passed: false,
+        reason:
+          "The sweep produced no adjacent visual change above the perceptual floor.",
+      });
   const report: SweepRenderReport = {
+    ...status,
     artifacts: { contactSheet, directory, manifest },
     command: "render-sweep",
     comparisons,
@@ -511,10 +441,7 @@ export async function renderThreeSweep(
           },
         }
       : {}),
-    success:
-      changed &&
-      variants.every((variant) => variant.success) &&
-      (await stat(contactSheet)).size > 0,
+    success: executionSucceeded,
     sweep: options.sweep,
     variants,
     warnings,

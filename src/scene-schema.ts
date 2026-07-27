@@ -119,7 +119,46 @@ export type RenderChecks = {
   boundsValid: boolean;
   requestedScaleAchieved: boolean;
   outputNonempty: boolean;
-  evidenceJudgeable?: boolean;
+};
+
+export type ExecutionStatus = {
+  meaning: "command-execution-only";
+  status: "failed" | "succeeded";
+};
+
+export type EvidenceClaimStatus = "judgeable" | "not-requested" | "unjudgeable";
+
+export type EvidenceStatus = {
+  claims: {
+    context?: EvidenceClaimStatus;
+    framing?: EvidenceClaimStatus;
+    motion?: EvidenceClaimStatus;
+    reference?: EvidenceClaimStatus;
+    surface?: EvidenceClaimStatus;
+    variation?: EvidenceClaimStatus;
+  };
+  reasons: string[];
+  status: "judgeable" | "not-requested" | "partially-judgeable" | "unjudgeable";
+};
+
+export type VisualAssessment = {
+  decisionOwner: "agent" | "sceneproof-assertion";
+  objective?:
+    | "appearance"
+    | "balanced"
+    | "composition"
+    | "delivery-scale"
+    | "geometry"
+    | "motion"
+    | "variation";
+  reasons: string[];
+  score?: number;
+  verdict:
+    | "failed"
+    | "not-requested"
+    | "passed"
+    | "review-required"
+    | "unjudgeable";
 };
 
 export type RasterStats = {
@@ -143,6 +182,12 @@ export type RasterizerInfo = {
 };
 
 export type RenderQuality = {
+  deliveryScale?: {
+    actualHeightPx: number;
+    requestedHeightPx: number;
+    satisfied: boolean;
+    toleranceFraction: number;
+  };
   explanation: string;
   judgeable: boolean;
   limitingFactor: "contrast" | "dispersion" | "framing" | null;
@@ -250,6 +295,9 @@ type ReferenceProbeSample = {
 };
 
 export type RenderReport = {
+  assessment: VisualAssessment;
+  evidence: EvidenceStatus;
+  execution: ExecutionStatus;
   success: boolean;
   nodeId: string;
   logicalSize: {
@@ -288,7 +336,9 @@ export type RenderReport = {
         profile: {
           curvatureSignChanges: number;
           highFrequencyDirectionReversals: number;
+          maximumDeviationFromFittedSplinePx: number;
           maximumDeviationFromLocalTrendPx: number;
+          splineAlgorithm: "reduced-knot-catmull-rom";
         };
         targetMeshCount: number;
       }
@@ -320,6 +370,7 @@ export type RenderReport = {
     contextRenderableCount: number;
     empty: boolean;
     environmentPresent: boolean;
+    source: "declared" | "isolated" | "scene";
     targetRenderableCount: number;
     totalRenderableCount: number;
   };
@@ -354,6 +405,9 @@ export type LogicalRegion = {
 };
 
 export type RegionRenderReport = {
+  assessment: VisualAssessment;
+  evidence: EvidenceStatus;
+  execution: ExecutionStatus;
   success: boolean;
   region: LogicalRegion;
   logicalSize: {
@@ -420,12 +474,15 @@ export type ScoutCandidate = {
 };
 
 export type ScoutReport = {
+  assessment: VisualAssessment;
   artifacts: {
     contactSheet: string;
     report: string;
     structure: string;
   };
   candidates: ScoutCandidate[];
+  evidence: EvidenceStatus;
+  execution: ExecutionStatus;
   focus: {
     nodeId?: string;
     source: "node" | "point" | "target";
@@ -477,17 +534,23 @@ export type ScoutRecommendation = {
 };
 
 export type FrameRenderReport = {
+  assessment: VisualAssessment;
   artifacts: {
     contactSheet: string;
     directory: string;
     manifest: string;
   };
   command: "render-frames";
+  evidence: EvidenceStatus;
+  execution: ExecutionStatus;
   action: {
     mutatedObjectCount: number | null;
     requested: boolean;
   };
   comparisons: Array<{
+    artifacts: {
+      amplifiedDifference: string;
+    };
     changedPixelFraction: number;
     classification: "below-perceptual-floor" | "changed" | "identical";
     from: string;
@@ -519,6 +582,7 @@ export type FrameRenderReport = {
 };
 
 export type SweepRenderReport = {
+  assessment: VisualAssessment;
   artifacts: {
     contactSheet: string;
     directory: string;
@@ -537,6 +601,8 @@ export type SweepRenderReport = {
     bundles: number;
     sceneInstances: number;
   };
+  evidence: EvidenceStatus;
+  execution: ExecutionStatus;
   recommendation?: {
     basis: "highest-reference-fit";
     caveat: string;

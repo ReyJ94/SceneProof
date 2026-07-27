@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { Command } from "commander";
 import { z } from "zod";
@@ -12,6 +12,7 @@ import {
   persistJsonEvidence,
   referenceJsonEvidence,
 } from "./evidence-store.js";
+import { completeReactProps, inferReactPropsTemplate } from "./react-props.js";
 import {
   inspectReact,
   renderReact,
@@ -33,6 +34,7 @@ import type {
   ScoutReport,
 } from "./scene-schema.js";
 import { resolveSceneNodeId } from "./scene-schema.js";
+import { renderThreeContextPair } from "./three-context-pair.js";
 import {
   type FixtureProvenance,
   inspectThree,
@@ -54,6 +56,7 @@ if (rendererProbeInput) {
 const PositiveInteger = z.coerce.number().int().positive();
 const PositiveScale = z.coerce.number().positive();
 const NonnegativeNumber = z.coerce.number().nonnegative();
+const UnitFraction = z.coerce.number().min(0).max(1);
 const RendererKindSchema = z.enum(["auto", "react", "three"]);
 const FramingSchema = z.enum(["source", "fit", "fill"]);
 const PropsSchema = z.record(z.string(), z.unknown());
@@ -85,6 +88,7 @@ type CommonOptions = {
   actionInput?: string;
   export: string;
   props?: string;
+  partialProps?: boolean;
   css?: string[];
   width: string;
   height: string;
@@ -94,6 +98,9 @@ type CommonOptions = {
 
 type RenderOptions = CommonOptions & {
   compare?: string;
+  contextPair?: boolean;
+  deliveryScale?: string;
+  deliveryTolerance: string;
   frames?: string;
   framing?: string;
   margin: string;
@@ -119,6 +126,10 @@ function fixtureOptions(command: Command, defaultExport: string): Command {
       "auto"
     )
     .option("--props <file>", "JSON fixture state passed to React or Three.js")
+    .option(
+      "--partial-props",
+      "complete missing React props from TypeScript with attributable placeholders"
+    )
     .option("--action <name>", "fixture-owned Three.js action")
     .option("--action-input <file>", "JSON object passed to the fixture action")
     .option("--time <milliseconds>", "deterministic fixture seek time")
@@ -156,6 +167,19 @@ function renderOptions(command: Command): Command {
     .option(
       "--compare <previous.png>",
       "compare the current Three.js render with a same-size prior PNG"
+    )
+    .option(
+      "--context-pair",
+      "capture declared context and isolation from one Three.js scene lifecycle"
+    )
+    .option(
+      "--delivery-scale <pixels>",
+      "assert the target's logical rendered height at delivery"
+    )
+    .option(
+      "--delivery-tolerance <fraction>",
+      "allowed delivery-height deviation",
+      "0.05"
     )
     .option(
       "--silhouette",
@@ -295,6 +319,13 @@ async function scoutBriefing(report: ScoutReport) {
       contactSheet: report.artifacts.contactSheet,
       structure: report.artifacts.structure,
     },
+    assessment: {
+      decisionOwner: report.assessment.decisionOwner,
+      ...(report.assessment.objective
+        ? { objective: report.assessment.objective }
+        : {}),
+      verdict: report.assessment.verdict,
+    },
     candidates: {
       omitted: report.candidates.length - shown.length,
       shown,
@@ -303,14 +334,20 @@ async function scoutBriefing(report: ScoutReport) {
     command: "scout",
     diagnosis: report.diagnosis,
     evidence: {
+      claims: report.evidence.claims,
       full: await referenceJsonEvidence(report.artifacts.report),
+      status: report.evidence.status,
     },
+    execution: report.execution,
     focus: report.focus,
     lifecycle: report.lifecycle,
     presentation: "brief",
     rasterizer: report.rasterizer,
     recommendations: report.recommendations,
-    recommended: report.recommended,
+    recommended: {
+      candidateId: report.recommended.candidateId,
+      detailCommand: report.recommended.detailCommand,
+    },
     success: report.success,
     target: report.target,
     timingsMs: {
@@ -341,6 +378,14 @@ async function prepareSource(
   const width = PositiveInteger.parse(raw.width);
   const absoluteEntry = resolve(entry);
   const props = await loadJsonInput(raw.props, "Props");
+  const completion = raw.partialProps
+    ? await completeReactProps({
+        component: raw.export,
+        entry: absoluteEntry,
+        provided: props.value,
+      })
+    : undefined;
+  const preparedProps = completion ? completion.props : props.value;
   const actionInput = await loadJsonInput(raw.actionInput, "Action input");
   if (raw.actionInput && !raw.action) {
     throw new Error("--action-input requires --action.");
@@ -352,7 +397,7 @@ async function prepareSource(
           entry: absoluteEntry,
           exportName: raw.export,
           height,
-          props: props.value,
+          props: preparedProps,
           width,
         })
       : requestedRenderer;
@@ -362,6 +407,9 @@ async function prepareSource(
     throw new Error(
       "--action, --action-input, and --time require a Three.js fixture."
     );
+  }
+  if (renderer === "three" && raw.partialProps) {
+    throw new Error("--partial-props requires a React component export.");
   }
   return {
     absoluteEntry,
@@ -376,10 +424,21 @@ async function prepareSource(
           }
         : null,
       props: props.reference,
+      ...(completion
+        ? {
+            propsCompletion: {
+              mode: "typed-placeholders" as const,
+              synthesizedPaths: completion.synthesizedPaths,
+              unsupportedPaths: completion.template.unsupported.map(
+                (value) => value.path
+              ),
+            },
+          }
+        : {}),
       timeMs: timeMs ?? null,
     },
     height,
-    props: props.value,
+    props: preparedProps,
     renderer,
     ...(timeMs === undefined ? {} : { timeMs }),
     width,
@@ -684,6 +743,32 @@ sourceOptions(
   output(await inspectBriefing(await inspectEntry(entry, raw)));
 });
 
+program
+  .command("props")
+  .description("derive a JSON fixture skeleton from a typed React export")
+  .argument("<entry>", "TypeScript or JavaScript source entry")
+  .option("--export <name>", "named React component export", "default")
+  .requiredOption("--out <file>", "JSON props skeleton output path")
+  .action(
+    async (
+      entry: string,
+      raw: { export: string; out: string }
+    ): Promise<void> => {
+      const template = await inferReactPropsTemplate(entry, raw.export);
+      const artifact = resolve(raw.out);
+      await mkdir(dirname(artifact), { recursive: true });
+      await writeFile(artifact, `${JSON.stringify(template.props, null, 2)}\n`);
+      output({
+        artifact,
+        command: "props",
+        component: template.component,
+        entry: template.entry,
+        placeholders: template.placeholders,
+        unsupported: template.unsupported,
+      });
+    }
+  );
+
 sourceOptions(
   program
     .command("tree")
@@ -710,6 +795,11 @@ renderOptions(
     .argument("<entry>", "TypeScript or JavaScript source entry")
     .argument("<node-id>", "deterministic scene node ID")
     .option("--isolate", "hide unrelated Three.js objects")
+    .option("--isolated", "alias for --isolate")
+    .option(
+      "--in-context",
+      "limit context to fixture-declared target context when available"
+    )
     .option("--background <color>", "Three.js background color or transparent")
     .option(
       "--view <preset|azimuth,elevation>",
@@ -731,6 +821,8 @@ renderOptions(
     nodeId: string,
     raw: RenderOptions & {
       isolate?: boolean;
+      isolated?: boolean;
+      inContext?: boolean;
       background?: string;
       view: string;
       zoom: string;
@@ -749,6 +841,11 @@ renderOptions(
     if (raw.reference && raw.referenceSet) {
       throw new Error(
         "--reference and --reference-set are mutually exclusive."
+      );
+    }
+    if ((raw.isolate || raw.isolated) && raw.inContext) {
+      throw new Error(
+        "--isolated/--isolate and --in-context are mutually exclusive."
       );
     }
     if (
@@ -798,15 +895,40 @@ renderOptions(
         props: prepared.props,
         scale,
         width: prepared.width,
+        ...(raw.deliveryScale
+          ? {
+              deliveryScale: PositiveScale.parse(raw.deliveryScale),
+              deliveryTolerance: UnitFraction.parse(raw.deliveryTolerance),
+            }
+          : {}),
         ...(prepared.timeMs === undefined ? {} : { timeMs: prepared.timeMs }),
         ...(raw.lookAt === undefined
           ? {}
           : { focus: parseVector3(raw.lookAt) }),
-        ...(raw.isolate === undefined ? {} : { isolate: raw.isolate }),
+        ...(raw.isolate === undefined && raw.isolated === undefined
+          ? {}
+          : { isolate: Boolean(raw.isolate || raw.isolated) }),
+        ...(raw.inContext === undefined ? {} : { inContext: raw.inContext }),
         ...(raw.background === undefined ? {} : { background: raw.background }),
         ...(view === undefined ? {} : { view }),
         zoom: PositiveScale.parse(raw.zoom),
       };
+      if (raw.contextPair) {
+        if (
+          raw.frames ||
+          raw.reference ||
+          raw.referenceSet ||
+          raw.sweep ||
+          raw.compare ||
+          raw.silhouette
+        ) {
+          throw new Error(
+            "--context-pair cannot be combined with frames, references, sweeps, compare, or silhouette."
+          );
+        }
+        output(await renderThreeContextPair({ ...common, out }));
+        return;
+      }
       if (raw.referenceSet) {
         if (raw.frames || raw.sweep || raw.compare) {
           throw new Error(
@@ -921,6 +1043,8 @@ renderOptions(
       raw.framing ||
       raw.stats ||
       raw.compare ||
+      raw.contextPair ||
+      raw.deliveryScale ||
       raw.silhouette ||
       raw.reference ||
       raw.referenceMask ||
@@ -929,7 +1053,7 @@ renderOptions(
       (raw.probe?.length ?? 0) > 0
     ) {
       throw new Error(
-        "--view, --zoom, --look-at, --framing, --frames, --stats, --compare, --silhouette, reference comparison, and --sweep are Three.js render options."
+        "--view, --zoom, --look-at, --framing, --frames, --stats, --compare, --context-pair, --delivery-scale, --silhouette, reference comparison, and --sweep are Three.js render options."
       );
     }
     output(

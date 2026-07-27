@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 type PackageManifest = {
@@ -154,16 +154,37 @@ function fallbackTarget(
   return typeof manifest.main === "string" ? manifest.main : null;
 }
 
+function installedPackageRoot(
+  root: string,
+  packageName: string
+): string | null {
+  const current = resolve(root);
+  const candidates = [
+    resolve(current, "node_modules", packageName),
+    ...(basename(current) === "node_modules"
+      ? [resolve(current, packageName)]
+      : []),
+  ];
+  const installed = candidates.find((candidate) =>
+    existsSync(resolve(candidate, "package.json"))
+  );
+  if (installed) {
+    return installed;
+  }
+  const parent = dirname(current);
+  return parent === current ? null : installedPackageRoot(parent, packageName);
+}
+
 export function resolveRuntimeDependency(name: string): string {
   const root = toolRoot();
   const { packageName, remainder, subpath } = packageRequest(name);
-  const packageRoot = resolve(root, "node_modules", packageName);
-  const manifestPath = resolve(packageRoot, "package.json");
-  if (!existsSync(manifestPath)) {
+  const packageRoot = installedPackageRoot(root, packageName);
+  if (!packageRoot) {
     throw new Error(
-      `Runtime dependency ${packageName} is not installed under ${root}. Run bun install in the SceneProof installation.`
+      `Runtime dependency ${packageName} is not installed beside ${root} or in an ancestor package tree. Reinstall SceneProof with its dependencies.`
     );
   }
+  const manifestPath = resolve(packageRoot, "package.json");
   const manifest = JSON.parse(
     readFileSync(manifestPath, "utf8")
   ) as PackageManifest;

@@ -48,6 +48,27 @@ the state was exported from the same application boundary and its freshness is
 known. If the real behavior cannot be represented without reimplementing it,
 report the visual check as blocked.
 
+## Result status contract
+
+Visual commands report three distinct layers:
+
+- `execution.status` says only whether the command ran and wrote its artifacts;
+- `evidence.status` says whether the pixels can support the requested claim;
+- `assessment` names the decision owner and verdict.
+
+The top-level `success` field is retained for compatibility and is exactly
+execution success, not visual acceptance. For example, a frame action with no
+visible transition can return `success: true` and
+`assessment.verdict: "failed"`. A completed reference comparison returns
+`assessment.verdict: "review-required"` with `decisionOwner: "agent"`; the
+agent must inspect reference/current/difference artifacts and decide whether
+the measured discrepancies satisfy the actual design claim. SceneProof does
+not award an automatic visual pass from a scalar similarity score.
+
+When luminance, framing, subject extraction, context, or another prerequisite
+cannot carry the intended claim, evidence is partial or unjudgeable. That is a
+hard boundary against approval, not a soft warning.
+
 ## Minimal factory
 
 Any named export may be used. The return contract, not the export name, selects
@@ -123,6 +144,7 @@ return {
       id: "featured-item",
       label: "Featured item",
       members: [{ object: shell }, { object: nucleus }],
+      context: [{ object: gallery }, { object: guideCurves }],
       bounds: () => new Box3().setFromObject(itemGroup),
       focus: () => itemGroup.getWorldPosition(new Vector3()),
       isolate: () => {
@@ -135,6 +157,13 @@ return {
 
 The resulting CLI target is `three:featured-item`. IDs are normalized and
 stable across commands.
+
+`context` declares the surrounding renderables needed to judge the target in
+its real perceptual environment. It does not change target bounds or ownership.
+Use `render --context-pair` to produce in-context and isolated views in one
+browser, bundle, and scene instance. `--in-context` and
+`--isolated`/`--isolate` request either view individually. Isolation retains
+all `Light` instances; it removes unrelated visible geometry, not illumination.
 
 For ordinary `InstancedMesh` data, assign one ID per active instance:
 
@@ -165,6 +194,13 @@ controlled clipping for detail inspection. `--scale` changes raster density;
 it does not move the camera and cannot recover information absent from the
 frame.
 
+`--delivery-scale <pixels>` asserts the logical on-screen target height at the
+resolved camera. The default tolerance is 5%; override it with
+`--delivery-tolerance <fraction>`. A miss does not mean rendering failed:
+execution succeeds while the delivery-scale assessment fails. This separation
+prevents a technically valid artifact at the wrong user-visible size from being
+approved.
+
 ## Scout evidence portfolio
 
 Scout returns four intent-specific recommendations:
@@ -181,6 +217,11 @@ appropriate only after the target already occupies an informative portion of
 the frame. Open the contact sheet and judge the alternatives; the numeric
 ranking narrows inspection but does not replace visual judgment.
 
+Scout and render quality reports also separate coverage from contrast. Surface
+claims become unjudgeable when the target's luminance spread falls below the
+reported floor; low-information pixels cannot support a surface-quality
+verdict merely because the artifact exists.
+
 ## Reference, comparison, and sweep evidence
 
 Use `--reference` when a supplied raster is the design constraint. Automatic
@@ -188,6 +229,8 @@ subject extraction withholds numeric claims when confidence is low; use an
 exact same-sized `--reference-mask` for complex backgrounds. The report keeps:
 
 - aligned silhouette IoU, aspect ratio, widest-point height, and tip angle;
+- fitted-spline silhouette deviation, curvature sign changes, and
+  high-frequency direction reversals for edge-quality evidence;
 - paired subject luminance p10, p50, p90, and maximum;
 - repeatable normalized subject-space `--probe x,y` samples and local
   same-colour run widths;
@@ -216,6 +259,11 @@ JSON manifest containing two to eight labeled entries. Each entry may declare
 paths resolve from the manifest. SceneProof uses one browser and one bundle,
 creates one attributable scene per view, and reports each comparison separately
 before computing the mean balanced fit.
+
+Frame sequences persist an amplified difference panel for every adjacent pair,
+alongside normalized raster delta, changed-signal coverage, and classification.
+The panels are included in the contact sheet even when frames are identical,
+so a successful capture cannot silently certify a null transition.
 
 ## Execution diagnostics
 

@@ -39,7 +39,7 @@
   ],
   "scripts": {
     "build": "bun build --compile --allow-unresolved '' --outfile dist/sceneproof src/cli.ts",
-    "check": "bun run lint && bun run typecheck && bun run test && bun run build",
+    "check": "bun run lint && bun run typecheck && bun run test && bun run build && bun run test:compiled",
     "cli": "bun src/cli.ts",
     "format": "ultracite fix .",
     "format:check": "ultracite check .",
@@ -48,6 +48,7 @@
     "prepack": "bun run check",
     "test": "bun test --timeout 30000 tests/cli.test.ts tests/react-renderer.test.ts tests/source-bundle.test.ts",
     "test:cli": "bun test --timeout 30000 tests/cli.test.ts",
+    "test:compiled": "bun tests/compiled-cli-smoke.ts",
     "typecheck": "tsc --noEmit"
   },
   "engines": {
@@ -62,6 +63,7 @@
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "three": "0.185.1",
+    "typescript": "7.0.2",
     "zod": "4.4.3"
   },
   "devDependencies": {
@@ -71,7 +73,6 @@
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
     "@types/three": "0.185.1",
-    "typescript": "7.0.2",
     "ultracite": "7.9.4"
   }
 }

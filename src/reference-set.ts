@@ -2,14 +2,18 @@ import { mkdir, stat, writeFile } from "node:fs/promises";
 import { basename, extname, join, resolve } from "node:path";
 
 import { launchBrowser, mountBundle } from "./browser-runtime.js";
+import { scoreReferenceFit } from "./reference-fit.js";
+import { agentReviewStatus } from "./report-status.js";
 import type {
+  EvidenceStatus,
+  ExecutionStatus,
   LogicalRegion,
   ReferenceComparisonReport,
   RenderQuality,
+  VisualAssessment,
 } from "./scene-schema.js";
 import { bundleBrowserDriver } from "./source-bundle.js";
 import { renderThree, type ThreeTargetView } from "./three-renderer.js";
-import { scoreReferenceFit } from "./three-sweep.js";
 
 type RenderThreeOptions = Parameters<typeof renderThree>[0];
 
@@ -105,7 +109,10 @@ export async function renderThreeReferenceSet(
 ): Promise<{
   aggregate: { analyzedViews: number; meanBalancedFit: number | null };
   artifacts: { directory: string; manifest: string };
+  assessment: VisualAssessment;
   command: "render-reference-set";
+  evidence: EvidenceStatus;
+  execution: ExecutionStatus;
   lifecycle: {
     browserLaunches: number;
     bundles: number;
@@ -199,7 +206,21 @@ export async function renderThreeReferenceSet(
   const scored = views.flatMap((view) =>
     view.referenceFit ? [view.referenceFit.score] : []
   );
+  const executionSucceeded =
+    views.every((view) => view.success) &&
+    views.length === options.references.length;
+  const evidenceJudgeable =
+    views.length === options.references.length &&
+    views.every((view) => view.reference.analysisAvailable);
+  const status = agentReviewStatus({
+    evidenceJudgeable,
+    executionSucceeded,
+    reason: evidenceJudgeable
+      ? "SceneProof measured every labeled reference view; the agent must inspect each perspective before accepting the implementation."
+      : "At least one labeled reference view is unjudgeable; the agent must not claim a multi-view match.",
+  });
   const result = {
+    ...status,
     aggregate: {
       analyzedViews: scored.length,
       meanBalancedFit:
@@ -214,10 +235,7 @@ export async function renderThreeReferenceSet(
       bundles: 1,
       sceneInstances: views.length,
     },
-    success:
-      views.every((view) => view.success) &&
-      views.every((view) => view.reference.analysisAvailable) &&
-      views.length === options.references.length,
+    success: executionSucceeded,
     views,
     warnings: [
       ...new Set([

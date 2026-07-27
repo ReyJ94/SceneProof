@@ -24,6 +24,14 @@ export function createScene(context: {
   subject.userData.sceneproofId = "subject";
   scene.add(subject);
 
+  const contextPlane = new Mesh(
+    new BoxGeometry(8, 0.25, 5),
+    new MeshStandardMaterial({ color: "#31384a", roughness: 0.9 })
+  );
+  contextPlane.position.set(0, 1.8, -0.8);
+  contextPlane.userData.sceneproofId = "context-plane";
+  scene.add(contextPlane);
+
   const key = new DirectionalLight("#ffffff", 3);
   key.name = "Key light";
   key.userData.sceneproofId = "key-light";
@@ -48,6 +56,7 @@ export function createScene(context: {
     targets: [
       {
         bounds: () => new Box3().setFromObject(subject),
+        context: [{ object: contextPlane }],
         id: "subject",
         isolate: () => {
           scene.traverse((object) => {

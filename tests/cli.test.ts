@@ -20,11 +20,12 @@ const packageVersion = (
   }
 ).version;
 const entry = resolve(root, "tests/fixtures/DemoCard.tsx");
-const threeEntry = resolve(root, "examples/three/object-gallery.ts");
+const threeEntry = resolve(root, "tests/fixtures/KnowledgeGraphScene.ts");
 const invisiblePointsEntry = resolve(root, "tests/fixtures/InvisiblePoints.ts");
 const advancedSceneEntry = resolve(root, "tests/fixtures/AdvancedScene.ts");
 const litIsolateEntry = resolve(root, "tests/fixtures/LitIsolateScene.ts");
 const nestedPropsEntry = resolve(root, "tests/fixtures/NestedPropsCard.tsx");
+const typedPropsEntry = resolve(root, "tests/fixtures/TypedPropsPanel.tsx");
 const staticActionEntry = resolve(root, "tests/fixtures/StaticActionScene.ts");
 const darkContrastEntry = resolve(root, "tests/fixtures/DarkContrastScene.ts");
 const silhouetteEntry = resolve(root, "tests/fixtures/SilhouetteScene.ts");
@@ -57,6 +58,8 @@ const CHROMIUM_PERMISSION_ERROR =
 const STRUCTURAL_REASON = /structural/i;
 const SCENEPROOF_USAGE = /Usage: sceneproof/;
 const DID_YOU_MEAN_SEMANTIC_FOCUS = /Did you mean three:semantic-focus/i;
+const TYPED_PROPS_PANEL_TEXT = /Real title ready 0\s*disabled/;
+const REFERENCE_AGENT_REVIEW_REASON = /reference.*current.*agent/i;
 const NESTED_PROPS_COMPONENT = /NestedPropsCard/;
 const MENU_STAGE_ACCESS = /menuStage/;
 const PROPS_FLAG = /--props/;
@@ -386,6 +389,91 @@ test("reports light physics and keeps lights visible after fixture-owned isolati
   }
 });
 
+test("captures declared context and isolation as one attributable scene lifecycle", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-context-pair-"));
+  const output = join(directory, "pair.png");
+  try {
+    const result = runCli([
+      "render",
+      litIsolateEntry,
+      "subject",
+      "--export",
+      "createScene",
+      "--renderer",
+      "three",
+      "--framing",
+      "fit",
+      "--context-pair",
+      "--width",
+      "160",
+      "--height",
+      "120",
+      "--out",
+      output,
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.command, "render-context-pair");
+    assert.deepEqual(report.lifecycle, {
+      browserLaunches: 1,
+      bundles: 1,
+      sceneInstances: 1,
+      views: 2,
+    });
+    assert.equal(report.variants.inContext.context.source, "declared");
+    assert.equal(report.variants.inContext.context.contextRenderableCount, 1);
+    assert.equal(report.variants.isolated.context.source, "isolated");
+    assert.equal(report.variants.isolated.context.contextRenderableCount, 0);
+    assert.equal(report.assessment.verdict, "review-required");
+    assert.equal(report.assessment.decisionOwner, "agent");
+    assert.ok(existsSync(report.artifacts.contactSheet));
+    assert.ok(existsSync(report.artifacts.inContext));
+    assert.ok(existsSync(report.artifacts.isolated));
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("separates a failed delivery-scale assertion from successful execution", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-delivery-scale-"));
+  const output = join(directory, "delivery.png");
+  try {
+    const result = runCli([
+      "render",
+      litIsolateEntry,
+      "subject",
+      "--export",
+      "createScene",
+      "--renderer",
+      "three",
+      "--framing",
+      "fit",
+      "--delivery-scale",
+      "1",
+      "--delivery-tolerance",
+      "0.05",
+      "--width",
+      "160",
+      "--height",
+      "120",
+      "--out",
+      output,
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.success, true);
+    assert.equal(report.execution.status, "succeeded");
+    assert.equal(report.quality.deliveryScale.requestedHeightPx, 1);
+    assert.equal(report.quality.deliveryScale.satisfied, false);
+    assert.ok(report.quality.deliveryScale.actualHeightPx > 1);
+    assert.equal(report.assessment.decisionOwner, "sceneproof-assertion");
+    assert.equal(report.assessment.objective, "delivery-scale");
+    assert.equal(report.assessment.verdict, "failed");
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
 test("accepts --isolate as a composable no-op alias on scout", () => {
   const directory = mkdtempSync(join(tmpdir(), "sceneproof-scout-isolate-"));
   try {
@@ -426,6 +514,85 @@ test("adds component and props guidance when a React render throws", () => {
   assert.match(result.stderr, NESTED_PROPS_COMPONENT);
   assert.match(result.stderr, MENU_STAGE_ACCESS);
   assert.match(result.stderr, PROPS_FLAG);
+});
+
+test("emits a typed React props skeleton with attributable placeholders", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-props-template-"));
+  const output = join(directory, "typed-props.json");
+  try {
+    const result = runCli([
+      "props",
+      typedPropsEntry,
+      "--export",
+      "TypedPropsPanel",
+      "--out",
+      output,
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.command, "props");
+    assert.equal(report.component, "TypedPropsPanel");
+    assert.equal(report.artifact, output);
+    assert.deepEqual(JSON.parse(readFileSync(output, "utf8")), {
+      enabled: false,
+      labels: [],
+      model: {
+        menuStage: "[missing: model.menuStage]",
+        nested: { count: 0 },
+      },
+      title: "[missing: title]",
+    });
+    assert.ok(
+      report.placeholders.some(
+        (placeholder: { path: string }) =>
+          placeholder.path === "model.menuStage"
+      )
+    );
+    assert.ok(
+      report.placeholders.some(
+        (placeholder: { path: string }) => placeholder.path === "title"
+      )
+    );
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("completes partial React props without hiding synthesized values", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-partial-props-"));
+  const partial = join(directory, "partial.json");
+  writeFileSync(
+    partial,
+    JSON.stringify({ model: { menuStage: "ready" }, title: "Real title" })
+  );
+  try {
+    const result = runCli([
+      "inspect",
+      typedPropsEntry,
+      "--export",
+      "TypedPropsPanel",
+      "--renderer",
+      "react",
+      "--props",
+      partial,
+      "--partial-props",
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+    const briefing = JSON.parse(result.stdout);
+    const scene = readFullEvidence(briefing);
+    const panel = scene.nodes.find(
+      (node: { id: string }) => node.id === "dom:typed-props-panel"
+    );
+    assert.match(panel.text, TYPED_PROPS_PANEL_TEXT);
+    assert.equal(scene.fixture.propsCompletion.mode, "typed-placeholders");
+    assert.deepEqual(scene.fixture.propsCompletion.synthesizedPaths.sort(), [
+      "enabled",
+      "labels",
+      "model.nested.count",
+    ]);
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
 });
 
 test("exposes stable instance IDs as frameable semantic targets", () => {
@@ -608,6 +775,16 @@ test("extracts target-mask silhouette evidence that distinguishes jagged from sm
       jagged.profile.maximumDeviationFromLocalTrendPx >
         smooth.profile.maximumDeviationFromLocalTrendPx
     );
+    assert.equal(smooth.profile.splineAlgorithm, "reduced-knot-catmull-rom");
+    assert.equal(jagged.profile.splineAlgorithm, "reduced-knot-catmull-rom");
+    assert.equal(
+      Number.isFinite(smooth.profile.maximumDeviationFromFittedSplinePx),
+      true
+    );
+    assert.ok(
+      jagged.profile.maximumDeviationFromFittedSplinePx >
+        smooth.profile.maximumDeviationFromFittedSplinePx
+    );
     assert.match(jagged.caveat, MEASUREMENT_NOT_TASTE);
   } finally {
     rmSync(directory, { force: true, recursive: true });
@@ -683,6 +860,21 @@ test("normalizes an automatic reference mask and reports paired subject evidence
     assert.deepEqual(report.probes[0].normalized, [0.5, 0.5]);
     assert.equal(report.probes[0].current.rgba.length, 4);
     assert.equal(report.probes[0].reference.rgba.length, 4);
+
+    const renderReport = JSON.parse(currentResult.stdout);
+    assert.deepEqual(renderReport.execution, {
+      meaning: "command-execution-only",
+      status: "succeeded",
+    });
+    assert.equal(renderReport.evidence.status, "judgeable");
+    assert.equal(renderReport.assessment.decisionOwner, "agent");
+    assert.equal(renderReport.assessment.verdict, "review-required");
+    assert.equal(renderReport.assessment.objective, "balanced");
+    assert.equal(renderReport.assessment.score > 0, true);
+    assert.match(
+      renderReport.assessment.reasons.join("\n"),
+      REFERENCE_AGENT_REVIEW_REASON
+    );
   } finally {
     rmSync(directory, { force: true, recursive: true });
   }
@@ -757,6 +949,21 @@ test("uses an explicit reference mask for auditable sculptural deltas", () => {
     assert.equal(
       report.silhouette.tipConvergenceAngle.algorithm,
       "outer-envelope-upper-third-linear-fit"
+    );
+    assert.equal(
+      Number.isFinite(report.silhouette.widestPointHeightFraction.current),
+      true
+    );
+    assert.equal(
+      Number.isFinite(report.silhouette.widestPointHeightFraction.reference),
+      true
+    );
+    assert.ok(
+      Math.abs(
+        report.silhouette.widestPointHeightFraction.delta -
+          (report.silhouette.widestPointHeightFraction.current -
+            report.silhouette.widestPointHeightFraction.reference)
+      ) < Number.EPSILON
     );
     assert.ok(report.probes[0].current.similarColorRun.horizontalPx > 0);
     assert.ok(report.probes[0].reference.similarColorRun.horizontalPx > 0);
@@ -856,6 +1063,10 @@ test("evaluates a labeled multi-view reference set without conflating perspectiv
     assert.equal(report.lifecycle.bundles, 1);
     assert.equal(report.aggregate.analyzedViews, 2);
     assert.equal(report.success, true);
+    assert.equal(report.execution.status, "succeeded");
+    assert.equal(report.evidence.status, "judgeable");
+    assert.equal(report.assessment.decisionOwner, "agent");
+    assert.equal(report.assessment.verdict, "review-required");
   } finally {
     rmSync(directory, { force: true, recursive: true });
   }
@@ -908,6 +1119,14 @@ test("refuses numeric reference claims when automatic subject confidence is low"
     assert.equal(fullReport.reference.silhouette, undefined);
     assert.ok(existsSync(fullReport.reference.artifacts.contactSheet));
     assert.match(fullReport.warnings.join("\n"), REFERENCE_CONFIDENCE_WARNING);
+    assert.deepEqual(fullReport.execution, {
+      meaning: "command-execution-only",
+      status: "succeeded",
+    });
+    assert.equal(fullReport.success, true);
+    assert.equal(fullReport.evidence.status, "unjudgeable");
+    assert.equal(fullReport.assessment.decisionOwner, "agent");
+    assert.equal(fullReport.assessment.verdict, "unjudgeable");
   } finally {
     rmSync(directory, { force: true, recursive: true });
   }
@@ -1285,7 +1504,11 @@ test("marks an ignored sweep prop as a no-op instead of useful evidence", () => 
     assert.equal(result.status, 0, result.stderr);
     const report = JSON.parse(result.stdout);
     assert.equal(report.comparisons[0].classification, "identical");
-    assert.equal(report.success, false);
+    assert.equal(report.success, true);
+    assert.equal(report.execution.status, "succeeded");
+    assert.equal(report.evidence.status, "judgeable");
+    assert.equal(report.assessment.decisionOwner, "sceneproof-assertion");
+    assert.equal(report.assessment.verdict, "failed");
     assert.match(report.warnings.join("\n"), SWEEP_NO_VISUAL_CHANGE);
   } finally {
     rmSync(directory, { force: true, recursive: true });
@@ -1390,6 +1613,10 @@ test("captures deterministic transition frames in one scene lifecycle", () => {
           comparison.classification === "changed"
       )
     );
+    for (const comparison of report.comparisons) {
+      assert.ok(existsSync(comparison.artifacts.amplifiedDifference));
+      assert.ok(statSync(comparison.artifacts.amplifiedDifference).size > 100);
+    }
     for (const frame of report.frames) {
       assert.ok(existsSync(frame.artifact));
       assert.ok(statSync(frame.artifact).size > 100);
@@ -1431,7 +1658,14 @@ test("fails an action sequence that contains no transition and explains the null
 
     assert.equal(result.status, 0, result.stderr);
     const report = JSON.parse(result.stdout);
-    assert.equal(report.success, false);
+    assert.equal(report.success, true);
+    assert.deepEqual(report.execution, {
+      meaning: "command-execution-only",
+      status: "succeeded",
+    });
+    assert.equal(report.evidence.status, "judgeable");
+    assert.equal(report.assessment.decisionOwner, "sceneproof-assertion");
+    assert.equal(report.assessment.verdict, "failed");
     assert.equal(report.quality.motionDetected, false);
     assert.equal(report.action.mutatedObjectCount, 0);
     assert.ok(
@@ -1444,6 +1678,12 @@ test("fails an action sequence that contains no transition and explains the null
           comparison.classification === "identical" &&
           comparison.changedPixelFraction === 0 &&
           comparison.normalizedRasterDelta === 0
+      )
+    );
+    assert.ok(
+      report.comparisons.every(
+        (comparison: { artifacts: { amplifiedDifference: string } }) =>
+          existsSync(comparison.artifacts.amplifiedDifference)
       )
     );
     assert.match(report.warnings.join("\n"), NO_VISUAL_TRANSITION);
@@ -1484,6 +1724,14 @@ test("marks a flat target surface unjudgeable while preserving its silhouette ev
     const report = JSON.parse(result.stdout);
     assert.equal(report.quality.judgeable, true);
     assert.equal(report.quality.surfaceJudgeable, false);
+    assert.deepEqual(report.execution, {
+      meaning: "command-execution-only",
+      status: "succeeded",
+    });
+    assert.equal(report.evidence.status, "partially-judgeable");
+    assert.equal(report.evidence.claims.framing, "judgeable");
+    assert.equal(report.evidence.claims.surface, "unjudgeable");
+    assert.equal(report.assessment.verdict, "not-requested");
     assert.ok(
       report.quality.surfaceLuminanceSpread <
         report.quality.surfaceLuminanceThreshold
@@ -1739,6 +1987,10 @@ test("render-region rebuilds a selected React patch from source at the requested
     assert.deepEqual(pngSize(output), report.renderedSize);
     assert.equal(report.checks.regionValid, true);
     assert.equal(report.checks.requestedScaleAchieved, true);
+    assert.equal(report.execution.status, "succeeded");
+    assert.equal(report.evidence.status, "judgeable");
+    assert.equal(report.assessment.decisionOwner, "agent");
+    assert.equal(report.assessment.verdict, "review-required");
   } finally {
     rmSync(directory, { force: true, recursive: true });
   }
@@ -1858,6 +2110,10 @@ test("scout builds one ranked multi-view evidence set around a semantic focus no
     assert.equal(briefing.command, "scout");
     assert.equal(briefing.presentation, "brief");
     assert.equal(briefing.success, true);
+    assert.equal(briefing.execution.status, "succeeded");
+    assert.equal(briefing.evidence.status, "judgeable");
+    assert.equal(briefing.assessment.decisionOwner, "agent");
+    assert.equal(briefing.assessment.verdict, "review-required");
     assert.deepEqual(briefing.lifecycle, {
       browserLaunches: 1,
       bundles: 1,
