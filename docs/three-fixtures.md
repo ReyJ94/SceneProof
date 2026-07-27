@@ -183,21 +183,27 @@ shader or buffer changes, expose an explicit target with `isolate`.
 
 ## Camera semantics
 
-Rendering has two independent controls:
+Rendering has three independent controls:
 
 - `--view original|front|side|top|isometric|azimuth,elevation` chooses the
   camera orientation source.
 - `--framing source|fit|fill` chooses whether the source camera remains literal
   or is reframed around the target.
+- `--projection source|perspective|orthographic` preserves or explicitly
+  converts the evidence projection.
 
-`--view original --framing source` clones the fixture camera without changing
-its transform or projection. Reports include both `camera.source` and
-`camera.resolved` plus `camera.modified`.
+`--view original --framing source --projection source` clones the fixture
+camera without changing its transform or projection. Reports include both
+`camera.source` and `camera.resolved` plus `camera.modified` and
+`camera.projection`. Projection conversion requires `fit` or `fill`; it is not
+allowed to masquerade as literal source framing.
 
 `fit` contains the target with margin. `fill` moves closer and permits
 controlled clipping for detail inspection. `--scale` changes raster density;
 it does not move the camera and cannot recover information absent from the
-frame.
+frame. Orthographic framing fits the target's projected corners rather than its
+world-space bounding sphere. This matters for front, side, and top blueprints:
+extent along the view axis must not make the visible form artificially small.
 
 `--delivery-scale <pixels>` asserts the logical on-screen target height at the
 resolved camera. The default tolerance is 5%; override it with
@@ -230,8 +236,13 @@ verdict merely because the artifact exists.
 ## Reference, comparison, and sweep evidence
 
 Use `--reference` when a supplied raster is the design constraint. Automatic
-subject extraction withholds numeric claims when confidence is low; use an
-exact same-sized `--reference-mask` for complex backgrounds. The report keeps:
+subject extraction withholds numeric claims when confidence is low. Constrain
+it with `--reference-region`, repeatable normalized
+`--reference-foreground-seed x,y` and `--reference-background-seed x,y`, or an
+exact same-sized `--reference-mask`. SceneProof always persists the candidate
+mask and a cyan overlay; automatic, assisted, and explicit masks all remain
+`needs-review` because extraction confidence is not semantic correctness. The
+report keeps:
 
 - aligned silhouette IoU, aspect ratio, widest-point height, and tip angle;
 - fitted-spline silhouette deviation, curvature sign changes, and
@@ -240,6 +251,11 @@ exact same-sized `--reference-mask` for complex backgrounds. The report keeps:
 - repeatable normalized subject-space `--probe x,y` samples and local
   same-colour run widths;
 - unaligned viewport composition center and size deltas;
+- 101 normalized height samples with current/reference left edge, right edge,
+  width, signed deltas, RMSE, maximum error, and contiguous too-wide/too-narrow
+  intervals;
+- mask component count, border-contact fraction, method, seeds, confidence
+  meaning, verification state, and generated mask artifacts;
 - reference, mask, region, and generated-artifact provenance.
 
 `--sweep prop.path=a,b,c` creates fresh scene instances in one browser and one
@@ -256,14 +272,19 @@ sceneproof render scene.ts three:subject \
 
 The four objectives are `geometry`, `appearance`, `composition`, and
 `balanced`. A recommendation is only the best candidate under that declared
-evidence contract; it is not a taste verdict.
+evidence contract; it is not a taste verdict. Sweep paths address fixture
+`context.props`. SceneProof deliberately does not rewrite hidden module
+constants; when all variants are visually identical, `sweepability` reports a
+no-op and tells the fixture author to expose the intended degree of freedom.
 
 For genuinely different supplied perspectives, use `--reference-set` with a
 JSON manifest containing two to eight labeled entries. Each entry may declare
-`view`, `framing`, `zoom`, `path`, `maskPath`, `region`, and `probes`. Relative
-paths resolve from the manifest. SceneProof uses one browser and one bundle,
-creates one attributable scene per view, and reports each comparison separately
-before computing the mean balanced fit.
+`view`, `projection`, `framing`, `zoom`, `path`, `maskPath`, `region`,
+`foregroundSeeds`, `backgroundSeeds`, and `probes`. Relative paths resolve from
+the manifest. SceneProof uses one browser and one bundle, creates one
+attributable scene per view, reports each comparison separately, names the
+worst analyzed view, and writes one unified contact sheet. An unjudgeable view
+keeps the set unjudgeable; the mean never hides a failed perspective.
 
 Frame sequences persist an amplified difference panel for every adjacent pair,
 alongside normalized raster delta, changed-signal coverage, and classification.

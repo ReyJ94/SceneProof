@@ -1,5 +1,48 @@
 # Changelog
 
+## [0.6.0] - 2026-07-28
+
+### Added
+
+- Explicit `--projection source|perspective|orthographic` evidence cameras,
+  including attributable camera conversion and exact front/side blueprint
+  orientations.
+- Repeatable normalized foreground/background seeds for reference extraction,
+  persisted candidate masks and cyan verification overlays, component and
+  border-contact audits, and explicit `*-needs-review` verification states.
+- A 101-sample silhouette profile with per-height left, right, and width deltas,
+  width RMSE, maximum disagreement, and contiguous too-wide/too-narrow ranges.
+- Unified multi-view contact sheets, per-view projection and seed ownership, and
+  worst-view reporting without allowing one perspective to substitute for
+  another.
+- Point-of-use next actions and required artifact-review questions on reference
+  runs, plus sweepability reports that identify fixture props with no visual
+  effect and explain that hidden module constants are not rewritten.
+
+### Changed
+
+- Seed-assisted confidence is assessed from foreground/background separation
+  rather than being capped by an annotated or otherwise nonuniform border; the
+  resulting mask still requires semantic review before any match claim.
+- Orthographic `fit` framing uses the target's projected extent and a stable
+  camera-up axis, preventing top views from being shrunk by depth that is not
+  visible in that projection.
+- Reference review sheets show the requested source region instead of shrinking
+  an entire infographic into the comparison panel.
+- Three-only bundling skips unrelated application CSS discovery while React
+  rendering retains automatic source-style loading.
+
+### Fixed
+
+- Perspective fixtures can now produce true orthographic evidence rather than
+  a perspective camera merely pointed at a nominal front or side view.
+- Multi-view top evidence no longer reports successful fit framing while the
+  target occupies only a few percent of the frame.
+- Low-confidence extraction still persists the candidate mask and overlay, so
+  an unjudgeable result supplies the evidence needed to correct it.
+- Reference-aware sweeps report no-op prop paths instead of recommending an
+  unchanged variant as useful evidence.
+
 ## [0.5.0] - 2026-07-27
 
 ### Added
@@ -143,6 +186,7 @@ of an uninformative image.
 Initial public release with source-grounded React and Three.js inspection,
 structural evidence, focused rerendering, and Scout camera discovery.
 
+[0.6.0]: https://github.com/ReyJ94/SceneProof/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/ReyJ94/SceneProof/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/ReyJ94/SceneProof/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/ReyJ94/SceneProof/compare/v0.2.0...v0.3.0

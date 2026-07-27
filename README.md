@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ReyJ94/SceneProof/releases/tag/v0.5.0"><img alt="Release v0.5.0" src="https://img.shields.io/badge/release-v0.5.0-E6A34D?style=flat-square" /></a>
+  <a href="https://github.com/ReyJ94/SceneProof/releases/tag/v0.6.0"><img alt="Release v0.6.0" src="https://img.shields.io/badge/release-v0.6.0-E6A34D?style=flat-square" /></a>
 </p>
 
 SceneProof lets coding agents see the interfaces and Three.js scenes they
@@ -23,6 +23,11 @@ visual judgment.
 Agents can recognize what they made, understand why it looks wrong, and ground
 their final judgment in falsifiable visual evidence—instead of coding UI and 3D
 blind.
+
+**New in v0.6.0:** convert evidence cameras explicitly between perspective and
+orthographic projection, audit seed-assisted reference masks before trusting
+metrics, localize silhouette disagreement over 101 height samples, and keep
+every supplied view visible in one non-substituting comparison sheet.
 
 **New in v0.5.0:** render Three.js fixtures through explicit WebGL or WebGPU
 backends, prove the actual backend and adapter in every report, and reject
@@ -153,7 +158,7 @@ when the image already presents the evidence that matters.
 | Find useful evidence quickly | A one-lifecycle Scout portfolio for context, source detail, close detail, and shape |
 | Compare an interaction | Deterministic before/time/settled frames from one bundle and one live scene |
 | Compare an implementation revision | A same-size previous/current contact sheet and amplified difference map |
-| Match a supplied reference | Aligned silhouette, paired luminance, pixel probes, unaligned composition, and explicit-mask provenance |
+| Match a supplied reference | Auditable masks, localized silhouette profiles, paired luminance, pixel probes, unaligned composition, and required comparison review |
 | Bracket a fixture parameter | One-variable contact sheets ranked by an explicit geometry, appearance, composition, or balanced objective |
 | Constrain a 3D form from several views | A labeled reference manifest evaluated per camera in one browser and one bundle |
 | Preserve model context | Compact briefings with lossless evidence available by path only when needed |
@@ -183,12 +188,13 @@ A successful command is therefore not a successful design:
 ```
 
 When `--reference` is supplied, SceneProof aligns and measures the subjects and
-produces a reference/current/difference contact sheet plus a silhouette overlay
-and amplified difference map. It does not turn a similarity score into a taste
-verdict. The agent must inspect those artifacts, reconcile the silhouette,
-composition, luminance, and probe deltas with the intended claim, and decide
-whether the implementation passes. If subject extraction or dynamic range is
-inadequate, the result is `unjudgeable`; the agent must not claim a match.
+produces a reference/current/difference contact sheet plus a silhouette overlay,
+amplified difference map, candidate mask, and cyan mask overlay. It does not
+turn a similarity score into a taste verdict. The agent must first verify that
+the overlay selects the intended subject, then reconcile localized silhouette,
+composition, luminance, and probe deltas with the intended claim. If subject
+extraction or dynamic range is inadequate, the result is `unjudgeable`; the
+agent must not claim a match.
 
 Within that status contract, SceneProof preserves two complementary forms of
 evidence:
@@ -223,8 +229,8 @@ single hero image to prove unseen geometry:
 ```json
 {
   "references": [
-    { "label": "hero", "view": "original", "path": "hero.png", "maskPath": "hero-mask.png" },
-    { "label": "side", "view": "side", "path": "side.png", "maskPath": "side-mask.png" }
+    { "label": "front", "view": "front", "projection": "orthographic", "path": "blueprint.png", "region": [40, 20, 600, 900], "foregroundSeeds": [[0.32, 0.48]], "backgroundSeeds": [[0.08, 0.12]] },
+    { "label": "side", "view": "side", "projection": "orthographic", "path": "blueprint.png", "maskPath": "side-mask.png" }
   ]
 }
 ```
@@ -235,8 +241,11 @@ sceneproof render scripts/sceneproof/monument.scene.ts three:monument \
   --out artifacts/monument-reference-set
 ```
 
-Each labeled view retains its own camera, mask, artifacts, and score. The
-aggregate never substitutes one perspective for another.
+Each labeled view retains its own camera, projection, mask, artifacts, and
+score. The unified sheet keeps every reference/current/difference row visible,
+and the report names the worst analyzed view. The aggregate never substitutes
+one perspective for another; one unjudgeable view keeps the multi-view verdict
+unjudgeable.
 
 ## Agent-facing surface
 
@@ -350,10 +359,14 @@ sceneproof scout scripts/sceneproof/gallery.scene.ts \
   --out artifacts/gallery-scout
 ```
 
-`--view original --framing source` preserves the complete source camera
-literally. `fit` contains the target. `fill` prioritizes target visibility and
-allows controlled clipping for close inspection. Scout provides four different
-evidence intentions:
+`--view original --framing source --projection source` preserves the complete
+source camera literally. `--projection perspective|orthographic` converts the
+evidence camera when a supplied image requires a matching projection; conversion
+uses `fit` or `fill` framing and is reported in `camera.projection`. Orthographic
+fit uses the target's projected extent, so a top view is not reduced by height
+that is invisible in that projection. `fit` contains the target. `fill`
+prioritizes target visibility and allows controlled clipping for close
+inspection. Scout provides four different evidence intentions:
 
 - `context`: literal source composition;
 - `sourceDetail`: a fresh source-camera region render;
@@ -449,8 +462,9 @@ SceneProof currently supports:
   region rendering, information-gain Scout portfolios, and compact evidence
   briefings;
 - reference/current/difference comparison, amplified adjacent-frame
-  differences, fitted-spline silhouette deviation, context/isolated pairs, and
-  delivery-scale assertions;
+  differences, seed-assisted and explicit mask audit artifacts, 101-row
+  silhouette profile deltas, fitted-spline silhouette deviation,
+  context/isolated pairs, and delivery-scale assertions;
 - typed React prop skeletons and explicitly provenance-marked partial-prop
   completion.
 
