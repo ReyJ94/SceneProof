@@ -197,6 +197,7 @@ export async function renderThreeSweep(
     propsWithOverride(options.props, options.sweep.path, value)
   );
   const bundle = await bundleBrowserDriver({
+    discoverCss: false,
     entry: options.entry,
     extraCss: [],
     source: sweepDriverSource(options, variantProps),
@@ -456,6 +457,12 @@ export async function renderThreeSweep(
       : {}),
     success: executionSucceeded,
     sweep: options.sweep,
+    sweepability: {
+      guidance: changed
+        ? "The fixture prop path produced attributable visual variation. Keep design variables reachable through context.props for repeatable sweeps."
+        : "This path produced no visual effect. Route the intended design variable through the fixture's context.props contract; SceneProof does not rewrite hidden module constants.",
+      pathReachability: changed ? "visually-effective" : "no-visual-effect",
+    },
     variants,
     warnings,
   };

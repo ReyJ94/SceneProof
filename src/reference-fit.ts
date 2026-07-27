@@ -48,6 +48,9 @@ export function scoreReferenceFit(
         )
       : 0,
     luminance: 1 - Math.min(1, luminanceMeanAbsoluteDelta),
+    profile: reference.profile
+      ? 1 - Math.min(1, reference.profile.summary.widthRmseFraction / 0.25)
+      : 0,
     silhouetteIoU: silhouette.areaIoU,
     tipConvergence:
       1 - Math.min(1, Math.abs(silhouette.tipConvergenceAngle.delta) / 90),
@@ -59,6 +62,7 @@ export function scoreReferenceFit(
       aspectRatio: 0,
       composition: 0,
       luminance: 1,
+      profile: 0,
       silhouetteIoU: 0,
       tipConvergence: 0,
       widestPoint: 0,
@@ -67,7 +71,8 @@ export function scoreReferenceFit(
       aspectRatio: 0.1,
       composition: 0.1,
       luminance: 0.2,
-      silhouetteIoU: 0.45,
+      profile: 0.15,
+      silhouetteIoU: 0.3,
       tipConvergence: 0.05,
       widestPoint: 0.1,
     },
@@ -75,6 +80,7 @@ export function scoreReferenceFit(
       aspectRatio: 0,
       composition: 1,
       luminance: 0,
+      profile: 0,
       silhouetteIoU: 0,
       tipConvergence: 0,
       widestPoint: 0,
@@ -83,7 +89,8 @@ export function scoreReferenceFit(
       aspectRatio: 0.15,
       composition: 0,
       luminance: 0,
-      silhouetteIoU: 0.65,
+      profile: 0.25,
+      silhouetteIoU: 0.4,
       tipConvergence: 0.1,
       widestPoint: 0.1,
     },

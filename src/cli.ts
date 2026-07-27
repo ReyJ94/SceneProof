@@ -43,6 +43,7 @@ import {
   renderThreeRegion,
   scoutThree,
   type ThreeFraming,
+  type ThreeProjection,
   type ThreeTargetView,
 } from "./three-renderer.js";
 import { renderThreeSweep } from "./three-sweep.js";
@@ -60,6 +61,7 @@ const UnitFraction = z.coerce.number().min(0).max(1);
 const RendererKindSchema = z.enum(["auto", "react", "three"]);
 const ThreeBackendSchema = z.enum(["webgl", "webgpu"]);
 const FramingSchema = z.enum(["source", "fit", "fill"]);
+const ProjectionSchema = z.enum(["source", "perspective", "orthographic"]);
 const PropsSchema = z.record(z.string(), z.unknown());
 const RegionTuple = z.tuple([
   z.coerce.number().nonnegative(),
@@ -78,9 +80,9 @@ const Vector3Tuple = z.tuple([
   z.coerce.number(),
 ]);
 const VIEW_PRESETS = {
-  front: { azimuth: -90, elevation: 18 },
+  front: { azimuth: -90, elevation: 0 },
   isometric: { azimuth: -45, elevation: 35 },
-  side: { azimuth: 0, elevation: 18 },
+  side: { azimuth: 0, elevation: 0 },
   top: { azimuth: -90, elevation: 89 },
 } as const;
 
@@ -110,7 +112,10 @@ type RenderOptions = CommonOptions & {
   reference?: string;
   referenceSet?: string;
   referenceMask?: string;
+  referenceBackgroundSeed?: string[];
+  referenceForegroundSeed?: string[];
   referenceRegion?: string;
+  projection?: string;
   scale: string;
   silhouette?: boolean;
   out?: string;
@@ -162,6 +167,11 @@ function renderOptions(command: Command): Command {
       "--framing <source|fit|fill>",
       "Three.js framing: literal source camera, contained target, or close target"
     )
+    .option(
+      "--projection <source|perspective|orthographic>",
+      "Three.js evidence projection; conversion requires fit or fill framing",
+      "source"
+    )
     .option("--margin <fraction>", "target framing margin", "0.12")
     .option(
       "--frames <before,ms...,settled>",
@@ -207,6 +217,18 @@ function renderOptions(command: Command): Command {
     .option(
       "--reference-region <x,y,width,height>",
       "constrain automatic reference subject extraction"
+    )
+    .option(
+      "--reference-foreground-seed <x,y>",
+      "normalized reference-image foreground seed; repeatable",
+      (value: string, previous: string[]) => [...previous, value],
+      []
+    )
+    .option(
+      "--reference-background-seed <x,y>",
+      "normalized reference-image background seed; repeatable",
+      (value: string, previous: string[]) => [...previous, value],
+      []
     )
     .option(
       "--probe <x,y>",
@@ -525,11 +547,14 @@ const ReferenceSetSchema = z.object({
   references: z
     .array(
       z.object({
+        backgroundSeeds: z.array(NormalizedProbeTuple).optional(),
+        foregroundSeeds: z.array(NormalizedProbeTuple).optional(),
         framing: z.enum(["source", "fit", "fill"]).optional(),
         label: z.string().trim().min(1),
         maskPath: z.string().optional(),
         path: z.string().min(1),
         probes: z.array(NormalizedProbeTuple).optional(),
+        projection: ProjectionSchema.optional(),
         region: RegionTuple.optional(),
         view: z.string().default("original"),
         zoom: z.coerce.number().positive().optional(),
@@ -553,8 +578,11 @@ async function parseReferenceSet(path: string): Promise<ReferenceViewInput[]> {
       ...(reference.maskPath
         ? { maskPath: resolve(directory, reference.maskPath) }
         : {}),
+      backgroundSeeds: reference.backgroundSeeds ?? [],
+      foregroundSeeds: reference.foregroundSeeds ?? [],
       path: resolve(directory, reference.path),
       probes: reference.probes ?? [],
+      projection: reference.projection ?? "source",
       ...(reference.region
         ? {
             region: {
@@ -849,10 +877,14 @@ renderOptions(
   ) => {
     if (
       !(raw.reference || raw.referenceSet) &&
-      (raw.referenceMask || raw.referenceRegion || (raw.probe?.length ?? 0) > 0)
+      (raw.referenceMask ||
+        raw.referenceRegion ||
+        (raw.referenceBackgroundSeed?.length ?? 0) > 0 ||
+        (raw.referenceForegroundSeed?.length ?? 0) > 0 ||
+        (raw.probe?.length ?? 0) > 0)
     ) {
       throw new Error(
-        "--reference-mask, --reference-region, and --probe require --reference."
+        "--reference-mask, --reference-region, reference seeds, and --probe require --reference."
       );
     }
     if (raw.reference && raw.referenceSet) {
@@ -869,8 +901,11 @@ renderOptions(
       raw.referenceSet &&
       (raw.referenceMask ||
         raw.referenceRegion ||
+        (raw.referenceBackgroundSeed?.length ?? 0) > 0 ||
+        (raw.referenceForegroundSeed?.length ?? 0) > 0 ||
         (raw.probe?.length ?? 0) > 0 ||
-        raw.view !== "original")
+        raw.view !== "original" ||
+        raw.projection !== "source")
     ) {
       throw new Error(
         "--reference-set owns per-view masks, regions, probes, and cameras through its manifest."
@@ -879,8 +914,14 @@ renderOptions(
     const prepared = await prepareSource(entry, raw);
     const scale = PositiveScale.parse(raw.scale);
     const framing = FramingSchema.parse(
-      raw.framing ?? (raw.view === "original" ? "source" : "fit")
+      raw.framing ??
+        (raw.view === "original" && raw.projection === "source"
+          ? "source"
+          : "fit")
     ) as ThreeFraming;
+    const projection = ProjectionSchema.parse(
+      raw.projection
+    ) as ThreeProjection;
     const margin = NonnegativeNumber.parse(raw.margin);
     let defaultOutput = "sceneproof-render.png";
     if (raw.frames) {
@@ -893,7 +934,10 @@ renderOptions(
       const view = parseThreeView(raw.view);
       if (
         framing === "source" &&
-        (view !== undefined || raw.zoom !== "1" || raw.lookAt)
+        (view !== undefined ||
+          raw.zoom !== "1" ||
+          raw.lookAt ||
+          projection !== "source")
       ) {
         throw new Error(
           "Source framing preserves the literal camera and cannot be combined with a generated view, --zoom, or --look-at. Use --framing fit or --framing fill."
@@ -909,6 +953,7 @@ renderOptions(
         height: prepared.height,
         margin,
         nodeId,
+        projection,
         props: prepared.props,
         scale,
         threeBackend: prepared.threeBackend,
@@ -1007,6 +1052,12 @@ renderOptions(
             ...(raw.reference
               ? {
                   reference: {
+                    backgroundSeeds: (raw.referenceBackgroundSeed ?? []).map(
+                      parseNormalizedProbe
+                    ),
+                    foregroundSeeds: (raw.referenceForegroundSeed ?? []).map(
+                      parseNormalizedProbe
+                    ),
                     ...(raw.referenceMask
                       ? { maskPath: resolve(raw.referenceMask) }
                       : {}),
@@ -1036,6 +1087,12 @@ renderOptions(
           ...(raw.reference
             ? {
                 reference: {
+                  backgroundSeeds: (raw.referenceBackgroundSeed ?? []).map(
+                    parseNormalizedProbe
+                  ),
+                  foregroundSeeds: (raw.referenceForegroundSeed ?? []).map(
+                    parseNormalizedProbe
+                  ),
                   ...(raw.referenceMask
                     ? { maskPath: resolve(raw.referenceMask) }
                     : {}),
@@ -1059,6 +1116,7 @@ renderOptions(
       raw.lookAt ||
       raw.frames ||
       raw.framing ||
+      raw.projection !== "source" ||
       raw.stats ||
       raw.compare ||
       raw.contextPair ||

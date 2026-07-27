@@ -228,6 +228,8 @@ export type ReferenceComparisonReport = {
   artifacts: {
     contactSheet: string;
     difference?: string;
+    referenceMask: string;
+    referenceMaskOverlay: string;
     silhouetteOverlay?: string;
   };
   histograms?: {
@@ -251,19 +253,56 @@ export type ReferenceComparisonReport = {
     };
   };
   mask: {
+    audit: {
+      borderContactFraction: number;
+      componentCount: number;
+    };
     backgroundColorDistanceP90?: number;
     bounds?: LogicalRegion;
     confidence: number;
+    confidenceMeaning: string;
     foregroundFraction: number;
-    method: "automatic" | "automatic-region" | "explicit-mask";
+    method:
+      | "assisted-seeds"
+      | "automatic"
+      | "automatic-region"
+      | "explicit-mask";
     minimumConfidence: number;
     reason?: string;
+    seeds: {
+      background: [number, number][];
+      foreground: [number, number][];
+    };
+    verification:
+      | "assisted-needs-review"
+      | "automatic-needs-review"
+      | "explicit-needs-review";
   };
   probes: Array<{
     current: ReferenceProbeSample;
     normalized: [number, number];
     reference: ReferenceProbeSample;
   }>;
+  profile?: {
+    samples: Array<{
+      current: ReferenceProfileEnvelope;
+      delta: ReferenceProfileEnvelope;
+      reference: ReferenceProfileEnvelope;
+      t: number;
+    }>;
+    summary: {
+      errorIntervals: Array<{
+        direction: "too-narrow" | "too-wide";
+        end: number;
+        meanWidthDeltaFraction: number;
+        start: number;
+      }>;
+      errorThresholdFraction: number;
+      maximumAbsoluteWidthDeltaAt: number;
+      maximumAbsoluteWidthDeltaFraction: number;
+      widthRmseFraction: number;
+    };
+  };
   silhouette?: {
     areaIoU: number;
     aspectRatio: ReferenceMetricDelta;
@@ -274,10 +313,18 @@ export type ReferenceComparisonReport = {
     widestPointHeightFraction: ReferenceMetricDelta;
   };
   source: {
+    backgroundSeeds: [number, number][];
+    foregroundSeeds: [number, number][];
     maskPath: string | null;
     path: string;
     region: LogicalRegion | null;
   };
+};
+
+type ReferenceProfileEnvelope = {
+  leftOffsetFraction: number;
+  rightOffsetFraction: number;
+  widthFraction: number;
 };
 
 type ReferenceMetricDelta = {
@@ -312,6 +359,7 @@ export type RenderReport = {
   };
   scale: number;
   artifact: string;
+  nextActions?: Array<{ command: string; reason: string }>;
   checks: RenderChecks;
   comparison?: {
     artifacts: {
@@ -325,6 +373,11 @@ export type RenderReport = {
     previous: string;
   };
   reference?: ReferenceComparisonReport;
+  review?: {
+    artifacts: string[];
+    questions: string[];
+    required: true;
+  };
   silhouette?:
     | {
         available: true;
@@ -355,6 +408,11 @@ export type RenderReport = {
     framing: "fill" | "fit" | "source";
     modified: boolean;
     position: [number, number, number];
+    projection: {
+      actual: "orthographic" | "perspective";
+      converted: boolean;
+      requested: "orthographic" | "perspective" | "source";
+    };
     resolved: CameraSnapshot;
     source: CameraSnapshot;
     target: [number, number, number];
@@ -619,6 +677,10 @@ export type SweepRenderReport = {
     value: unknown;
   };
   success: boolean;
+  sweepability: {
+    guidance: string;
+    pathReachability: "no-visual-effect" | "visually-effective";
+  };
   sweep: {
     objective: "appearance" | "balanced" | "composition" | "geometry";
     path: string;
@@ -635,6 +697,7 @@ export type SweepRenderReport = {
         aspectRatio: number;
         composition: number;
         luminance: number;
+        profile: number;
         silhouetteIoU: number;
         tipConvergence: number;
         widestPoint: number;

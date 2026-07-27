@@ -29,6 +29,7 @@ const typedPropsEntry = resolve(root, "tests/fixtures/TypedPropsPanel.tsx");
 const staticActionEntry = resolve(root, "tests/fixtures/StaticActionScene.ts");
 const darkContrastEntry = resolve(root, "tests/fixtures/DarkContrastScene.ts");
 const silhouetteEntry = resolve(root, "tests/fixtures/SilhouetteScene.ts");
+const projectedFitEntry = resolve(root, "tests/fixtures/ProjectedFitScene.ts");
 const webgpuStandardEntry = resolve(
   root,
   "tests/fixtures/WebGpuStandardScene.ts"
@@ -87,6 +88,7 @@ const REFERENCE_OPTION_DEPENDENCY = /reference-mask.*require.*reference/i;
 const REFERENCE_MASK_DIMENSIONS = /mask dimensions differ.*reference/i;
 const COMPETING_REFERENCE_COMPONENTS = /competing.*components/i;
 const SWEEP_NO_VISUAL_CHANGE = /sweep.*no adjacent visual change/i;
+const SWEEP_FIXTURE_PROP_GUIDANCE = /context\.props|fixture prop/i;
 const NOT_A_TASTE_VERDICT = /not a taste verdict/i;
 const WEBGPU_COMPATIBILITY_ERROR = /WebGPU compatibility/i;
 const GLSL_SUBJECT = /glsl-subject/i;
@@ -95,6 +97,8 @@ const GLSL_TO_TSL_GUIDANCE = /GLSL.*TSL|TSL.*GLSL/i;
 const WEBGL_ONLY_EXPORTS = /WebGL-only Three\.js exports/i;
 const WEBGPU_TSL_EQUIVALENT = /WebGPU\/TSL equivalent/i;
 const EXPLICIT_WEBGL_BACKEND = /--three-backend webgl/i;
+const VISUAL_QUALITY_VERDICT = /visual-quality verdict/i;
+const CYAN_MASK_REVIEW = /cyan mask/i;
 
 type CliResult = {
   readonly status: number | null;
@@ -810,6 +814,118 @@ test("extracts target-mask silhouette evidence that distinguishes jagged from sm
   }
 });
 
+test("can replace a perspective fixture camera with an orthographic evidence camera", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-orthographic-"));
+  const fixtureProps = join(directory, "smooth.json");
+  writeFileSync(fixtureProps, JSON.stringify({ jagged: false }));
+
+  try {
+    const result = runCli([
+      "render",
+      silhouetteEntry,
+      "subject",
+      "--export",
+      "createScene",
+      "--renderer",
+      "three",
+      "--props",
+      fixtureProps,
+      "--projection",
+      "orthographic",
+      "--view",
+      "front",
+      "--framing",
+      "fit",
+      "--width",
+      "240",
+      "--height",
+      "240",
+      "--out",
+      join(directory, "orthographic.png"),
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.camera.source.type, "PerspectiveCamera");
+    assert.equal(report.camera.resolved.type, "OrthographicCamera");
+    assert.equal(report.camera.projection.requested, "orthographic");
+    assert.equal(report.camera.projection.actual, "orthographic");
+    assert.equal(report.camera.projection.converted, true);
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("fits an orthographic top view to projected target extent", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-projected-fit-"));
+
+  try {
+    const result = runCli([
+      "render",
+      projectedFitEntry,
+      "subject",
+      "--export",
+      "createScene",
+      "--renderer",
+      "three",
+      "--projection",
+      "orthographic",
+      "--view",
+      "top",
+      "--framing",
+      "fit",
+      "--width",
+      "320",
+      "--height",
+      "320",
+      "--out",
+      join(directory, "top.png"),
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.camera.resolved.type, "OrthographicCamera");
+    assert.ok(report.quality.targetProjectedCoverage > 0.2);
+    assert.ok(report.quality.targetProjectedPixelSize.height > 180);
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("puts a copy-ready reference comparison next action on an unassessed render", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-next-action-"));
+  const fixtureProps = join(directory, "smooth.json");
+  writeFileSync(fixtureProps, JSON.stringify({ jagged: false }));
+
+  try {
+    const result = runCli([
+      "render",
+      silhouetteEntry,
+      "subject",
+      "--export",
+      "createScene",
+      "--renderer",
+      "three",
+      "--props",
+      fixtureProps,
+      "--framing",
+      "fit",
+      "--out",
+      join(directory, "current.png"),
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.assessment.verdict, "not-requested");
+    assert.ok(
+      report.nextActions.some(
+        (action: { command: string; reason: string }) =>
+          action.command.includes("--reference <image>") &&
+          VISUAL_QUALITY_VERDICT.test(action.reason)
+      )
+    );
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
 test("normalizes an automatic reference mask and reports paired subject evidence", () => {
   const directory = mkdtempSync(join(tmpdir(), "sceneproof-reference-auto-"));
   const fixtureProps = join(directory, "smooth.json");
@@ -865,11 +981,16 @@ test("normalizes an automatic reference mask and reports paired subject evidence
     assert.ok(existsSync(report.artifacts.contactSheet));
     assert.ok(existsSync(report.artifacts.difference));
     assert.ok(existsSync(report.artifacts.silhouetteOverlay));
+    assert.ok(existsSync(report.artifacts.referenceMask));
+    assert.ok(existsSync(report.artifacts.referenceMaskOverlay));
     assert.deepEqual(pngSize(report.artifacts.contactSheet), {
       height: 240,
       width: 720,
     });
     assert.ok(report.silhouette.areaIoU > 0.9);
+    assert.equal(report.profile.samples.length, 101);
+    assert.ok(report.profile.summary.widthRmseFraction < 0.06);
+    assert.ok(report.profile.summary.maximumAbsoluteWidthDeltaFraction < 0.12);
     assert.ok(
       Math.abs(
         report.histograms.current.luminance.p50 -
@@ -890,6 +1011,13 @@ test("normalizes an automatic reference mask and reports paired subject evidence
     assert.equal(renderReport.assessment.verdict, "review-required");
     assert.equal(renderReport.assessment.objective, "balanced");
     assert.equal(renderReport.assessment.score > 0, true);
+    assert.equal(renderReport.review.required, true);
+    assert.ok(
+      renderReport.review.artifacts.includes(
+        report.artifacts.referenceMaskOverlay
+      )
+    );
+    assert.match(renderReport.review.questions.join("\n"), CYAN_MASK_REVIEW);
     assert.match(
       renderReport.assessment.reasons.join("\n"),
       REFERENCE_AGENT_REVIEW_REASON
@@ -951,8 +1079,15 @@ test("uses an explicit reference mask for auditable sculptural deltas", () => {
     const report = JSON.parse(currentResult.stdout).reference;
     assert.equal(report.analysisAvailable, true);
     assert.equal(report.mask.method, "explicit-mask");
-    assert.equal(report.mask.confidence, 1);
+    assert.equal(report.mask.verification, "explicit-needs-review");
+    assert.equal(report.mask.audit.componentCount, 1);
+    assert.equal(typeof report.mask.audit.borderContactFraction, "number");
+    assert.ok(existsSync(report.artifacts.referenceMask));
+    assert.ok(existsSync(report.artifacts.referenceMaskOverlay));
     assert.ok(report.silhouette.areaIoU < 0.9);
+    assert.equal(report.profile.samples.length, 101);
+    assert.ok(report.profile.summary.maximumAbsoluteWidthDeltaFraction > 0);
+    assert.ok(report.profile.summary.errorIntervals.length > 0);
     assert.equal(Number.isFinite(report.silhouette.aspectRatio.current), true);
     assert.equal(
       Number.isFinite(report.silhouette.aspectRatio.reference),
@@ -1034,6 +1169,7 @@ test("evaluates a labeled multi-view reference set without conflating perspectiv
             label: "front",
             maskPath: heroReport.silhouette.artifact,
             path: hero,
+            projection: "orthographic",
             view: "front",
           },
         ],
@@ -1081,6 +1217,13 @@ test("evaluates a labeled multi-view reference set without conflating perspectiv
     assert.equal(report.lifecycle.browserLaunches, 1);
     assert.equal(report.lifecycle.bundles, 1);
     assert.equal(report.aggregate.analyzedViews, 2);
+    assert.equal(report.aggregate.worstView.label, "front");
+    assert.ok(existsSync(report.artifacts.contactSheet));
+    assert.deepEqual(pngSize(report.artifacts.contactSheet), {
+      height: 480,
+      width: 960,
+    });
+    assert.equal(report.views[1].camera.resolved.type, "OrthographicCamera");
     assert.equal(report.success, true);
     assert.equal(report.execution.status, "succeeded");
     assert.equal(report.evidence.status, "judgeable");
@@ -1137,6 +1280,13 @@ test("refuses numeric reference claims when automatic subject confidence is low"
     assert.equal(fullReport.reference.histograms, undefined);
     assert.equal(fullReport.reference.silhouette, undefined);
     assert.ok(existsSync(fullReport.reference.artifacts.contactSheet));
+    assert.ok(existsSync(fullReport.reference.artifacts.referenceMask));
+    assert.ok(existsSync(fullReport.reference.artifacts.referenceMaskOverlay));
+    assert.ok(
+      fullReport.nextActions.some((action: { command: string }) =>
+        action.command.includes("--reference-mask")
+      )
+    );
     assert.match(fullReport.warnings.join("\n"), REFERENCE_CONFIDENCE_WARNING);
     assert.deepEqual(fullReport.execution, {
       meaning: "command-execution-only",
@@ -1188,6 +1338,23 @@ test("withholds automatic reference metrics when disconnected subjects compete",
     assert.equal(report.analysisAvailable, false);
     assert.ok(report.mask.confidence < report.mask.minimumConfidence);
     assert.match(report.mask.reason, COMPETING_REFERENCE_COMPONENTS);
+    assert.equal(report.mask.verification, "automatic-needs-review");
+    const assistedResult = runCli([
+      ...base,
+      "--reference",
+      reference,
+      "--reference-foreground-seed",
+      "0.28,0.5",
+      "--out",
+      join(directory, "assisted-current.png"),
+    ]);
+    assert.equal(assistedResult.status, 0, assistedResult.stderr);
+    const assistedReport = JSON.parse(assistedResult.stdout).reference;
+    assert.equal(assistedReport.analysisAvailable, true);
+    assert.equal(assistedReport.mask.method, "assisted-seeds");
+    assert.equal(assistedReport.mask.verification, "assisted-needs-review");
+    assert.deepEqual(assistedReport.mask.seeds.foreground, [[0.28, 0.5]]);
+    assert.ok(existsSync(assistedReport.artifacts.referenceMaskOverlay));
     const regionResult = runCli([
       ...base,
       "--reference",
@@ -1523,6 +1690,8 @@ test("marks an ignored sweep prop as a no-op instead of useful evidence", () => 
     assert.equal(result.status, 0, result.stderr);
     const report = JSON.parse(result.stdout);
     assert.equal(report.comparisons[0].classification, "identical");
+    assert.equal(report.sweepability.pathReachability, "no-visual-effect");
+    assert.match(report.sweepability.guidance, SWEEP_FIXTURE_PROP_GUIDANCE);
     assert.equal(report.success, true);
     assert.equal(report.execution.status, "succeeded");
     assert.equal(report.evidence.status, "judgeable");
@@ -2364,7 +2533,7 @@ test("render gives an agent explicit target perspective and camera zoom controls
     assert.equal(report.success, true);
     assert.equal(report.camera.view, "front");
     assert.equal(report.camera.zoom, 3);
-    assert.equal(report.camera.elevation, 18);
+    assert.equal(report.camera.elevation, 0);
     assert.equal(report.camera.azimuth, -90);
     assert.equal(report.renderedSize.width, 640);
     assert.equal(report.rasterizer.kind, "swiftshader-cpu");

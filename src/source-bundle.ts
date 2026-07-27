@@ -27,6 +27,12 @@ export type BrowserBundle = {
   inputs: string[];
 };
 
+export function shouldDiscoverSourceCss(
+  discoverCss: boolean | undefined
+): boolean {
+  return discoverCss !== false;
+}
+
 const TRANSIENT_ESBUILD_SERVICE_ERROR =
   /(?:The service was stopped|service is no longer running).*(?:EPERM|operation not permitted|send)/is;
 const WEBGPU_MISSING_THREE_EXPORT =
@@ -208,6 +214,7 @@ function sourceResolutionPlugin(
 }
 
 export async function bundleBrowserDriver(input: {
+  discoverCss?: boolean;
   entry: string;
   source: string;
   extraCss: readonly string[];
@@ -273,7 +280,9 @@ export async function bundleBrowserDriver(input: {
   const inputs = Object.keys(result.metafile.inputs).map((path) =>
     resolve(dirname(input.entry), path)
   );
-  const discoveredCss = await discoverSourceCss(inputs);
+  const discoveredCss = shouldDiscoverSourceCss(input.discoverCss)
+    ? await discoverSourceCss(inputs)
+    : [];
   const cssSources = [
     ...new Set([
       ...discoveredCss,

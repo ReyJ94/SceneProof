@@ -86,6 +86,7 @@ export async function probeRenderer(
   input: RendererProbeInput
 ): Promise<RendererKind> {
   const bundle = await bundleBrowserDriver({
+    discoverCss: false,
     entry: input.entry,
     extraCss: [],
     source: `

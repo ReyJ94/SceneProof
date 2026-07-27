@@ -73,7 +73,7 @@ function renderAssessment(input: RenderStatusInput): VisualAssessment {
       decisionOwner: "agent",
       objective: "balanced",
       reasons: [
-        "SceneProof measured reference/current differences; the agent must inspect the artifacts and decide whether they satisfy the intended visual claim.",
+        `SceneProof measured reference/current differences from a ${input.reference.mask.verification} mask; the agent must inspect the mask overlay and comparison artifacts before deciding whether they satisfy the intended visual claim.`,
       ],
       score: fit.score,
       verdict: "review-required",

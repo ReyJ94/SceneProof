@@ -31,6 +31,7 @@ export async function renderThreeContextPair(options: ContextPairOptions) {
   await mkdir(directory, { recursive: true });
 
   const bundle = await bundleBrowserDriver({
+    discoverCss: false,
     entry: options.entry,
     extraCss: [],
     source: driverSource(options),

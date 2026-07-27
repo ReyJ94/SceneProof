@@ -1,4 +1,4 @@
-import { mkdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { basename, extname, join, resolve } from "node:path";
 
 import { launchBrowser, mountBundle } from "./browser-runtime.js";
@@ -14,15 +14,22 @@ import type {
 } from "./scene-schema.js";
 import { bundleBrowserDriver } from "./source-bundle.js";
 import type { GraphicsInfo } from "./three-backend.js";
-import { renderThree, type ThreeTargetView } from "./three-renderer.js";
+import {
+  renderThree,
+  type ThreeProjection,
+  type ThreeTargetView,
+} from "./three-renderer.js";
 
 type RenderThreeOptions = Parameters<typeof renderThree>[0];
 
 export type ReferenceViewInput = {
+  backgroundSeeds: [number, number][];
   framing?: "fill" | "fit" | "source";
+  foregroundSeeds: [number, number][];
   label: string;
   maskPath?: string;
   path: string;
+  projection: ThreeProjection;
   probes: [number, number][];
   region?: LogicalRegion;
   view?: ThreeTargetView;
@@ -40,6 +47,7 @@ type ReferenceSetOptions = Omit<
 
 type ReferenceViewReport = {
   artifact: string;
+  camera: NonNullable<Awaited<ReturnType<typeof renderThree>>["camera"]>;
   label: string;
   quality?: RenderQuality;
   reference: ReferenceComparisonReport;
@@ -113,8 +121,12 @@ function referenceSetDriverSource(options: ReferenceSetOptions): string {
 export async function renderThreeReferenceSet(
   options: ReferenceSetOptions
 ): Promise<{
-  aggregate: { analyzedViews: number; meanBalancedFit: number | null };
-  artifacts: { directory: string; manifest: string };
+  aggregate: {
+    analyzedViews: number;
+    meanBalancedFit: number | null;
+    worstView: { label: string; score: number } | null;
+  };
+  artifacts: { contactSheet: string; directory: string; manifest: string };
   assessment: VisualAssessment;
   command: "render-reference-set";
   evidence: EvidenceStatus;
@@ -147,12 +159,14 @@ export async function renderThreeReferenceSet(
       )
     : requested;
   const manifest = join(directory, "reference-set.json");
+  const contactSheet = join(directory, "contact-sheet.png");
   await mkdir(directory, { recursive: true });
   const views: ReferenceViewReport[] = [];
   let graphics: GraphicsInfo | undefined;
   const warnings: string[] = [];
   const { out: _out, references: _references, ...base } = options;
   const bundle = await bundleBrowserDriver({
+    discoverCss: false,
     entry: options.entry,
     extraCss: [],
     source: referenceSetDriverSource(options),
@@ -187,23 +201,27 @@ export async function renderThreeReferenceSet(
           out: artifact,
           preparedPage: page,
           reference: {
+            backgroundSeeds: reference.backgroundSeeds,
+            foregroundSeeds: reference.foregroundSeeds,
             ...(reference.maskPath ? { maskPath: reference.maskPath } : {}),
             path: reference.path,
             probes: reference.probes,
             ...(reference.region ? { region: reference.region } : {}),
           },
           ...(reference.view ? { view: reference.view } : {}),
+          projection: reference.projection,
           ...(zoom ? { zoom } : {}),
         });
         graphics ??= report.graphics;
-        if (!report.reference) {
+        if (!(report.reference && report.camera)) {
           throw new Error(
-            `Reference evidence was not produced for ${reference.label}.`
+            `Reference evidence or resolved camera was not produced for ${reference.label}.`
           );
         }
         const referenceFit = scoreReferenceFit(report.reference, "balanced");
         views.push({
           artifact,
+          camera: report.camera,
           label: reference.label,
           ...(report.quality ? { quality: report.quality } : {}),
           reference: report.reference,
@@ -216,15 +234,93 @@ export async function renderThreeReferenceSet(
         await page.close();
       }
     }
+    const contactPage = await browserContext.newPage();
+    try {
+      const rows = await Promise.all(
+        views.map(async (view) => ({
+          comparison: `data:image/png;base64,${(
+            await readFile(view.reference.artifacts.contactSheet)
+          ).toString("base64")}`,
+          overlay: view.reference.artifacts.silhouetteOverlay
+            ? `data:image/png;base64,${(
+                await readFile(view.reference.artifacts.silhouetteOverlay)
+              ).toString("base64")}`
+            : null,
+        }))
+      );
+      const dataUrl = await contactPage.evaluate(
+        async ({ imageRows, rowHeight, rowWidth }) => {
+          const canvas = document.createElement("canvas");
+          canvas.width = rowWidth * 4;
+          canvas.height = rowHeight * imageRows.length;
+          const context = canvas.getContext("2d");
+          if (!context) {
+            throw new Error(
+              "A 2D canvas is required for reference-set evidence."
+            );
+          }
+          const decode = async (source: string): Promise<HTMLImageElement> => {
+            const image = new Image();
+            image.src = source;
+            await image.decode();
+            return image;
+          };
+          const decodedRows = await Promise.all(
+            imageRows.map(async (row) => ({
+              comparison: await decode(row.comparison),
+              overlay: row.overlay ? await decode(row.overlay) : null,
+            }))
+          );
+          for (const [index, row] of decodedRows.entries()) {
+            const y = index * rowHeight;
+            context.drawImage(row.comparison, 0, y, rowWidth * 3, rowHeight);
+            if (row.overlay) {
+              context.drawImage(
+                row.overlay,
+                rowWidth * 3,
+                y,
+                rowWidth,
+                rowHeight
+              );
+            }
+          }
+          return canvas.toDataURL("image/png");
+        },
+        {
+          imageRows: rows,
+          rowHeight: options.height,
+          rowWidth: options.width,
+        }
+      );
+      await writeFile(
+        contactSheet,
+        Buffer.from(dataUrl.slice(dataUrl.indexOf(",") + 1), "base64")
+      );
+    } finally {
+      await contactPage.close();
+    }
   } finally {
     await browser.close();
   }
   const scored = views.flatMap((view) =>
     view.referenceFit ? [view.referenceFit.score] : []
   );
+  const worstView = views.reduce<ReferenceViewReport | null>((worst, view) => {
+    if (!view.referenceFit) {
+      return worst;
+    }
+    if (
+      !worst?.referenceFit ||
+      view.referenceFit.score <= worst.referenceFit.score
+    ) {
+      return view;
+    }
+    return worst;
+  }, null);
   const executionSucceeded =
     views.every((view) => view.success) &&
-    views.length === options.references.length;
+    views.length === options.references.length &&
+    (await stat(contactSheet)).size > 0;
   const evidenceJudgeable =
     views.length === options.references.length &&
     views.every((view) => view.reference.analysisAvailable);
@@ -243,8 +339,11 @@ export async function renderThreeReferenceSet(
         scored.length > 0
           ? scored.reduce((sum, score) => sum + score, 0) / scored.length
           : null,
+      worstView: worstView?.referenceFit
+        ? { label: worstView.label, score: worstView.referenceFit.score }
+        : null,
     },
-    artifacts: { directory, manifest },
+    artifacts: { contactSheet, directory, manifest },
     command: "render-reference-set" as const,
     ...(graphics ? { graphics } : {}),
     lifecycle: {

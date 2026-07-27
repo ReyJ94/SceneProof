@@ -44,6 +44,7 @@ export type FixtureProvenance = {
 };
 
 export type ThreeFraming = "fill" | "fit" | "source";
+export type ThreeProjection = "orthographic" | "perspective" | "source";
 
 type ThreeOptions = {
   action?: string;
@@ -65,12 +66,15 @@ type ThreeOptions = {
   focus?: [number, number, number];
   fixture?: FixtureProvenance;
   framing?: ThreeFraming;
+  projection?: ThreeProjection;
   margin?: number;
   inContext?: boolean;
   props: Record<string, unknown>;
   preparedPage?: import("playwright-core").Page;
   preserveFixture?: boolean;
   reference?: {
+    backgroundSeeds?: [number, number][];
+    foregroundSeeds?: [number, number][];
     maskPath?: string;
     path: string;
     probes: [number, number][];
@@ -420,8 +424,8 @@ type ScoutCandidateSpec = {
 };
 
 const SCOUT_VIEWS: ThreeTargetView[] = [
-  { azimuth: -90, elevation: 18, label: "front" },
-  { azimuth: 0, elevation: 18, label: "side" },
+  { azimuth: -90, elevation: 0, label: "front" },
+  { azimuth: 0, elevation: 0, label: "side" },
   { azimuth: -90, elevation: 89, label: "top" },
   { azimuth: -45, elevation: 35, label: "isometric" },
 ];
@@ -633,6 +637,7 @@ export function driverSource(input: ThreeOptions): string {
 
 async function prepareThreePage(options: ThreeOptions) {
   const bundle = await bundleBrowserDriver({
+    discoverCss: false,
     entry: options.entry,
     extraCss: [],
     source: driverSource(options),
@@ -1257,6 +1262,7 @@ export async function renderThree(
       | "margin"
       | "props"
       | "preparedPage"
+      | "projection"
       | "preserveFixture"
       | "reference"
       | "silhouette"
@@ -1299,6 +1305,7 @@ export async function renderThree(
         zoom,
         focus,
         framing,
+        projection,
         margin,
         silhouette,
         // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Playwright must serialize target resolution, framing, and rendering into one browser callback.
@@ -1652,19 +1659,128 @@ export async function renderThree(
           if (Reflect.get(framedCamera, "isOrthographicCamera")) {
             const orthographic =
               framedCamera as import("three").OrthographicCamera;
+            const direction = view
+              ? (() => {
+                  const up = orthographic.up.clone().normalize();
+                  const horizontalX = new THREE.Vector3(
+                    1,
+                    0,
+                    0
+                  ).addScaledVector(up, -up.x);
+                  if (horizontalX.lengthSq() < 0.0001) {
+                    horizontalX.set(0, 0, 1).addScaledVector(up, -up.z);
+                  }
+                  horizontalX.normalize();
+                  const horizontalY = up.clone().cross(horizontalX).normalize();
+                  const azimuth = THREE.MathUtils.degToRad(view.azimuth);
+                  const elevation = THREE.MathUtils.degToRad(view.elevation);
+                  return horizontalX
+                    .multiplyScalar(Math.cos(elevation) * Math.cos(azimuth))
+                    .addScaledVector(
+                      horizontalY,
+                      Math.cos(elevation) * Math.sin(azimuth)
+                    )
+                    .addScaledVector(up, Math.sin(elevation));
+                })()
+              : orthographic
+                  .getWorldDirection(new THREE.Vector3())
+                  .multiplyScalar(-1);
+            if (direction.lengthSq() === 0) {
+              direction.set(1, -1, 1);
+            }
+            direction.normalize();
             const paddingFactor =
               framing === "fill" ? Math.max(0.25, 1 - margin) : 1 + margin * 2;
-            const extent = radius * paddingFactor;
-            orthographic.left = -extent * (width / height);
-            orthographic.right = extent * (width / height);
+            const distance = Math.max(1, radius * 4);
+            orthographic.position
+              .copy(center)
+              .addScaledVector(direction, distance);
+            if (Math.abs(orthographic.up.dot(direction)) > 0.98) {
+              orthographic.up.set(0, 1, 0);
+              if (Math.abs(orthographic.up.dot(direction)) > 0.98) {
+                orthographic.up.set(1, 0, 0);
+              }
+            }
+            orthographic.lookAt(center);
+            orthographic.updateMatrixWorld(true);
+            const corners: import("three").Vector3[] = [];
+            for (const x of [box.min.x, box.max.x]) {
+              for (const y of [box.min.y, box.max.y]) {
+                for (const z of [box.min.z, box.max.z]) {
+                  corners.push(
+                    new THREE.Vector3(x, y, z).applyMatrix4(
+                      orthographic.matrixWorldInverse
+                    )
+                  );
+                }
+              }
+            }
+            const projectedHalfWidth = Math.max(
+              0.05,
+              ...corners.map((corner) => Math.abs(corner.x))
+            );
+            const projectedHalfHeight = Math.max(
+              0.05,
+              ...corners.map((corner) => Math.abs(corner.y))
+            );
+            const aspect = width / height;
+            const extent =
+              (Math.max(projectedHalfHeight, projectedHalfWidth / aspect) *
+                paddingFactor) /
+              Math.max(zoom, 0.001);
+            orthographic.left = -extent * aspect;
+            orthographic.right = extent * aspect;
             orthographic.top = extent;
             orthographic.bottom = -extent;
-            orthographic.lookAt(center);
+            orthographic.near = Math.max(0.01, distance - radius * 4);
+            orthographic.far = Math.max(
+              orthographic.near + 1,
+              distance + radius * 8
+            );
             orthographic.updateProjectionMatrix();
           }
         };
-        const camera = result.camera.clone();
-        const sourceCamera = cameraSnapshot(camera);
+        const sourceFixtureCamera = result.camera.clone();
+        const sourceCamera = cameraSnapshot(sourceFixtureCamera);
+        const requestedProjection = projection ?? "source";
+        let camera: import("three").Camera = sourceFixtureCamera;
+        if (
+          requestedProjection === "orthographic" &&
+          !Reflect.get(sourceFixtureCamera, "isOrthographicCamera")
+        ) {
+          const converted = new THREE.OrthographicCamera(
+            -1,
+            1,
+            1,
+            -1,
+            Math.max(
+              0.001,
+              Number(Reflect.get(sourceFixtureCamera, "near") ?? 0.1)
+            ),
+            Math.max(1, Number(Reflect.get(sourceFixtureCamera, "far") ?? 2000))
+          );
+          converted.position.copy(sourceFixtureCamera.position);
+          converted.quaternion.copy(sourceFixtureCamera.quaternion);
+          converted.up.copy(sourceFixtureCamera.up);
+          camera = converted;
+        } else if (
+          requestedProjection === "perspective" &&
+          !Reflect.get(sourceFixtureCamera, "isPerspectiveCamera")
+        ) {
+          const converted = new THREE.PerspectiveCamera(
+            50,
+            width / height,
+            Math.max(
+              0.001,
+              Number(Reflect.get(sourceFixtureCamera, "near") ?? 0.1)
+            ),
+            Math.max(1, Number(Reflect.get(sourceFixtureCamera, "far") ?? 2000))
+          );
+          converted.position.copy(sourceFixtureCamera.position);
+          converted.quaternion.copy(sourceFixtureCamera.quaternion);
+          converted.up.copy(sourceFixtureCamera.up);
+          camera = converted;
+        }
         frameCamera(camera);
         camera.updateMatrixWorld(true);
         const resolvedCamera = cameraSnapshot(camera);
@@ -2054,6 +2170,13 @@ export async function renderThree(
             modified:
               JSON.stringify(sourceCamera) !== JSON.stringify(resolvedCamera),
             position: camera.position.toArray(),
+            projection: {
+              actual: Reflect.get(camera, "isOrthographicCamera")
+                ? ("orthographic" as const)
+                : ("perspective" as const),
+              converted: camera.type !== sourceFixtureCamera.type,
+              requested: requestedProjection,
+            },
             resolved: resolvedCamera,
             source: sourceCamera,
             target: center.toArray(),
@@ -2086,6 +2209,7 @@ export async function renderThree(
         isolate: options.isolate ?? false,
         margin: options.margin ?? 0.12,
         nodeId: options.nodeId,
+        projection: options.projection ?? "source",
         scale: options.scale,
         silhouette:
           (options.silhouette ?? false) || options.reference !== undefined,
@@ -2164,8 +2288,10 @@ export async function renderThree(
     const referenceComparison =
       options.reference && rendered.silhouetteEvidence?.available === true
         ? await compareRenderToReference({
+            backgroundSeeds: options.reference.backgroundSeeds ?? [],
             currentMaskDataUrl: rendered.silhouetteEvidence.dataUrl,
             currentOutput: output,
+            foregroundSeeds: options.reference.foregroundSeeds ?? [],
             ...(options.reference.maskPath
               ? { maskPath: options.reference.maskPath }
               : {}),
@@ -2305,6 +2431,24 @@ export async function renderThree(
       quality,
       ...(referenceComparison ? { reference: referenceComparison.report } : {}),
     });
+    const commandPrefix = `sceneproof render ${JSON.stringify(options.entry)} ${JSON.stringify(options.nodeId)}`;
+    const nextActions: Array<{ command: string; reason: string }> = [];
+    if (!options.reference) {
+      nextActions.push({
+        command: `${commandPrefix} --reference <image> --out ${JSON.stringify(output)}`,
+        reason:
+          "A visual-quality verdict requires comparing the implementation with an explicit reference or other declared objective.",
+      });
+    } else if (
+      referenceComparison &&
+      !referenceComparison.report.analysisAvailable
+    ) {
+      nextActions.push({
+        command: `${commandPrefix} --reference ${JSON.stringify(options.reference.path)} --reference-mask ${JSON.stringify(referenceComparison.report.artifacts.referenceMask)} --out ${JSON.stringify(output)}`,
+        reason:
+          "Open and verify the generated reference-mask overlay before rerunning with the candidate mask; add seeds instead when the candidate is wrong.",
+      });
+    }
     return {
       ...status,
       artifact: output,
@@ -2321,9 +2465,32 @@ export async function renderThree(
       isolation: rendered.isolation,
       logicalSize: rendered.logicalSize,
       nodeId: options.nodeId,
+      ...(nextActions.length > 0 ? { nextActions } : {}),
       quality,
       rasterizer: rasterizerInfo(rendered.rendererName),
       ...(referenceComparison ? { reference: referenceComparison.report } : {}),
+      ...(referenceComparison
+        ? {
+            review: {
+              artifacts: [
+                referenceComparison.report.artifacts.referenceMaskOverlay,
+                referenceComparison.report.artifacts.contactSheet,
+                ...(referenceComparison.report.artifacts.difference
+                  ? [referenceComparison.report.artifacts.difference]
+                  : []),
+                ...(referenceComparison.report.artifacts.silhouetteOverlay
+                  ? [referenceComparison.report.artifacts.silhouetteOverlay]
+                  : []),
+              ],
+              questions: [
+                "Does the cyan mask overlay select exactly the intended reference subject and exclude annotations or background?",
+                `Does the ${rendered.camera.projection.actual} implementation projection match the supplied reference projection?`,
+                "Where do the localized profile intervals, silhouette overlay, luminance, and composition disagree, and are those discrepancies acceptable for the stated design claim?",
+              ],
+              required: true as const,
+            },
+          }
+        : {}),
       renderedSize: rendered.renderedSize,
       renderer: "three",
       scale: options.scale,

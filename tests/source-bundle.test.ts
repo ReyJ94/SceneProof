@@ -5,7 +5,10 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { resolveRuntimeDependency } from "../src/runtime-dependency.js";
-import { retryTransientEsbuildService } from "../src/source-bundle.js";
+import {
+  retryTransientEsbuildService,
+  shouldDiscoverSourceCss,
+} from "../src/source-bundle.js";
 
 const MISSING_MODULE_ERROR = /Could not resolve/;
 
@@ -37,6 +40,11 @@ test("does not retry deterministic esbuild compilation failures", async () => {
     MISSING_MODULE_ERROR
   );
   assert.equal(attempts, 1);
+});
+
+test("does not discover application CSS for a Three-only browser bundle", () => {
+  assert.equal(shouldDiscoverSourceCss(false), false);
+  assert.equal(shouldDiscoverSourceCss(undefined), true);
 });
 
 test("resolves runtime dependencies hoisted beside an installed SceneProof package", () => {
