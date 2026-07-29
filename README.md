@@ -7,9 +7,9 @@
 </p>
 
 <p align="center">
-  <strong>Give coding agents eyes for the UI and 3D work they build.</strong><br />
-  SceneProof reconstructs your real source, renders it faithfully, and hands
-  agents evidence they can actually judge—not a screenshot to guess from.
+  <strong>Coding agents can read your source. They can't see it render.</strong><br />
+  SceneProof closes that gap: it rebuilds your real UI or Three.js scene,
+  renders it at full quality, and hands the agent evidence instead of a guess.
 </p>
 
 <p align="center">
@@ -17,25 +17,13 @@
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-6B8E9E?style=flat-square" /></a>
 </p>
 
-## The gap this closes
-
-Coding agents read source fluently and edit it with confidence. They are much
-worse at *seeing* what that source actually produces—and that blind spot is
-where UI and 3D work quietly goes wrong.
-
-Source proves a component or mesh exists. It doesn't prove the result is
-legible, well-lit, correctly composed, or even visible. A screenshot shows
-pixels, but throws away hierarchy, material state, and geometry—enlarging it
-never recovers detail that was never rendered. Clicking through a browser
-proves interaction works, not that the result looks right. So an agent ships
-on faith, and the mismatch surfaces only when a human opens the app.
-
-SceneProof gives the agent a real loop instead: map the UI or scene into
-stable targets, inspect the structure behind whatever looks uncertain, frame
-the region that actually matters, render fresh evidence at the quality the
-judgment needs, and verify the result instead of trusting plausible-looking
-code. Camera and region selection come before pixel density—more pixels only
-help once the frame already holds the evidence that matters.
+An agent can write a component, run the build, and still have no idea whether
+the result is legible, well-lit, or on screen at all. A screenshot doesn't
+help much either — it throws away hierarchy and geometry, and blowing it up
+never recovers detail that was never rendered. SceneProof gives the agent a
+better move: reconstruct the actual source, render it fresh at the quality
+the question needs, and inspect the structure behind whatever still looks
+wrong — instead of shipping on faith and finding out from a human later.
 
 ## Install
 
@@ -44,13 +32,11 @@ bun add --global github:ReyJ94/SceneProof
 sceneproof --help
 ```
 
-Requires [Bun](https://bun.com/docs/installation) 1.3.14+ and a local Chrome
-or Chromium install. That's the whole setup—see
-[troubleshooting](#troubleshooting) if anything doesn't come up clean.
+Needs [Bun](https://bun.com/docs/installation) 1.3.14+ and a local Chrome or
+Chromium. If something doesn't come up clean, check
+[troubleshooting](#troubleshooting).
 
 ## Try it
-
-Point it at any component you already have, with whatever props it needs:
 
 ```bash
 sceneproof render src/components/DemoCard.tsx \
@@ -61,11 +47,29 @@ sceneproof render src/components/DemoCard.tsx \
   --out artifacts/demo-card.png
 ```
 
-That's a fresh, full-quality render straight from your own source—no
-screenshot, no headless-browser click-through. From here: [`tree`](#agent-facing-surface)
-to browse structure, [`scout`](#threejs-quick-path) to find a good Three.js
-camera automatically, or the [React](#react-quick-path) and
-[Three.js](#threejs-quick-path) quick paths below for the full picture.
+Swap in your own component and props file. That command reconstructs it from
+source and renders it at full quality — not a crop, not a browser screenshot.
+From here, [`tree`](#agent-facing-surface) browses structure,
+[`scout`](#threejs-quick-path) finds a good Three.js camera on its own, and
+the [React](#react-quick-path) / [Three.js](#threejs-quick-path) sections
+below cover the rest.
+
+## What it gives an agent
+
+- **A real structure to reason from** — React and Three.js trees with stable
+  IDs, bounds, styles, materials, lights, and cameras, not just pixels.
+- **The right view, not just more pixels** — context renders, close-up
+  regions, and Scout-picked cameras, so detail only gets denser once the
+  framing already shows what matters.
+- **An honest verdict, not a false positive** — every result separates
+  whether the command *ran* from whether the result is actually *judgeable*.
+  A successful command is not the same as a correct design.
+- **Real reference comparison** — aligned silhouette, luminance, and pixel-probe
+  deltas against a supplied image, with an auditable mask so a comparison
+  can't quietly grade against the wrong subject.
+- **Explicit WebGL/WebGPU provenance** — every render reports the backend and
+  adapter it actually used, and a requested WebGPU path fails loudly instead
+  of silently falling back to WebGL.
 
 ## What's new in v0.6.0
 
@@ -92,6 +96,148 @@ parameters in one sweep, and constrain 3D work from labeled reference views.
 
 </details>
 
+## Agent-facing surface
+
+| Verb | Purpose |
+| --- | --- |
+| `tree` | Navigate semantic structure |
+| `node` | Inspect one exact target and its immediate relationships |
+| `props` | Derive a typed JSON skeleton for a React component export |
+| `inspect` | Reconstruct the source and preserve the canonical scene artifact |
+| `scout` | Discover useful Three.js target cameras in one scene lifecycle |
+| `render` | Produce fresh context or target evidence |
+| `render-region` | Rerender an exact logical viewport patch |
+| `doctor` | Prove Chromium and WebGL/WebGPU readiness and explain required permissions |
+
+SceneProof owns renderer setup and evidence persistence. The agent chooses the
+real source boundary, declared state, semantic target, framing, and evidence
+needed to resolve the uncertainty.
+
+## React quick path
+
+Point any of the verbs at a named export with deterministic JSON props —
+SceneProof also picks up source CSS, workspace `@/` aliases, and Tailwind v4:
+
+```bash
+sceneproof tree src/components/DemoCard.tsx --export DemoCard --props fixtures/demo-card.json
+sceneproof node src/components/DemoCard.tsx dom:demo-card --export DemoCard --props fixtures/demo-card.json
+sceneproof render src/components/DemoCard.tsx dom:demo-card --export DemoCard --props fixtures/demo-card.json --scale 4 --out artifacts/demo-card.png
+```
+
+Don't have a fixture yet for a typed production component? Derive one instead
+of reverse-engineering the prop type by hand:
+
+```bash
+sceneproof props src/PricingPanel.tsx --export PricingPanel --out fixtures/pricing-panel.json
+```
+
+`--partial-props` deep-completes a partial object with clearly labeled
+placeholders, and the report lists exactly which paths are synthesized so
+none get mistaken for real state. `render-region` renders a fresh viewport
+patch at device scale rather than cropping an existing image.
+
+## Three.js quick path
+
+Any export name works — `--renderer auto` detects Three.js from its
+`{ scene, camera }` return contract, or brand a factory explicitly with
+`defineThreeFixture` from `sceneproof/three`. Inspect structure first, then
+let Scout find a useful camera when you're not sure which one you need:
+
+```bash
+sceneproof node scene.ts three:featured-item --export createGalleryEvidence --props fixtures/selected.json
+sceneproof scout scene.ts three:featured-item --export createGalleryEvidence --props fixtures/selected.json --out artifacts/gallery-scout
+```
+
+Scout returns four kinds of view — `context` (literal source composition),
+`sourceDetail` (a fresh region render), `detail` (close, ranked for target
+visibility), and `shape` (an alternate angle ranked for form). Only reach for
+`--scale` once framing is right and raster detail is still the limit.
+
+`--projection perspective|orthographic` converts the evidence camera when a
+supplied reference needs to match it — `fit` contains the target, `fill`
+allows controlled clipping for close inspection. Actions and timeline frames
+stay inside one real scene lifecycle:
+
+```bash
+sceneproof render scene.ts three:featured-item --export createGalleryEvidence --props fixtures/selected.json \
+  --action select --frames before,0,80,160,settled --framing source --out artifacts/select-transition.png
+```
+
+`--context-pair` captures a target in and out of its surrounding scene in the
+same lifecycle, so a form never gets approved against an empty background it
+won't ship with. For the full lifecycle, instance-ID, and diagnostic
+contracts, see [the Three.js fixture protocol](docs/three-fixtures.md).
+
+WebGL is the default. Request WebGPU explicitly with `--three-backend webgpu`
+when the source supports it — SceneProof reports the actual backend and
+adapter used, and fails the command rather than silently falling back to
+WebGL2 if the source isn't compatible. Full backend and compatibility details
+live under [Execution diagnostics](docs/three-fixtures.md#execution-diagnostics)
+in the fixture protocol.
+
+## How SceneProof judges a result
+
+Every result carries three separate answers, because a command that *ran*
+isn't the same as a design that's *right*:
+
+- **Execution** — did the command finish and persist its artifacts.
+- **Evidence** — can the artifact actually support the claim being checked:
+  `judgeable`, `partially-judgeable`, `unjudgeable`, or `not-requested`.
+- **Assessment** — who owns the verdict. Delivery-scale or motion checks can
+  pass or fail automatically; matching a supplied reference stays an
+  agent-owned judgment SceneProof won't make for you.
+
+```json
+{
+  "success": true,
+  "execution": { "status": "succeeded", "meaning": "command-execution-only" },
+  "evidence": { "status": "judgeable" },
+  "assessment": { "decisionOwner": "agent", "verdict": "review-required" }
+}
+```
+
+Reference comparisons (`--reference`) go further: an aligned silhouette
+overlay, amplified difference map, and candidate mask, plus paired luminance
+histograms and repeatable `--probe x,y` samples. The agent has to confirm the
+overlay is actually on the intended subject before trusting any of it — an
+inadequate mask or dynamic range comes back `unjudgeable` rather than a false
+match. `--sweep-objective geometry|appearance|composition|balanced` picks
+which of those facts ranks a one-variable `--sweep`. Multiple labeled views
+can be declared at once via `--reference-set`, each scored on its own camera
+and mask, with the aggregate never substituting one perspective for another.
+
+## Inspecting application source
+
+Prefer an existing product export whenever it's already the real visual
+boundary. When deterministic setup is genuinely needed, keep it separate from
+application code: reusable inspectors go in `scripts/sceneproof/<surface>.scene.ts`,
+their fixtures in `scripts/sceneproof/fixtures/`, one-off investigations under
+`/tmp/sceneproof-inspectors/` — never adapters, copied geometry, or invented
+state inside `src`. An inspector may import the production owner unchanged
+and drive it with real props and actions, but it can't guess how the app
+"probably" looks: it proves the current code under a declared fixture state,
+not parity with an unrecorded live session. If the real boundary can't be
+loaded without fabricating the behavior under test, SceneProof blocks the
+verification rather than approximating it.
+
+## Current scope
+
+Supported today: TypeScript/JavaScript entries; React DOM with computed
+styles, semantic roles, SVG subtrees, and region rendering; workspace `@/`
+imports, JSON props, source CSS, and Tailwind v4; full Three.js scene graphs
+— transforms, bounds, geometry attributes, materials, uniforms, textures,
+lights, cameras; explicit WebGL/WebGPU capture with strict compatibility
+checks; custom-named factories, deterministic props/actions/time, and stable
+`InstancedMesh` IDs; reference/current/difference comparison with silhouette,
+luminance, and mask-audit evidence; typed React prop skeletons with
+provenance-marked partial completion.
+
+Not yet: SVG-native export. The GitHub install uses SceneProof's linked
+source entry — the standalone compiled binary is still experimental for
+arbitrary workspace entries with nested imports. WebGPU support is bounded by
+the source's own Three.js compatibility; SceneProof doesn't translate GLSL
+shaders or WebGL-only addons into TSL for you.
+
 ## Troubleshooting
 
 <details>
@@ -117,9 +263,8 @@ command above.
 <details>
 <summary><strong><code>sceneproof: command not found</code></strong></summary>
 
-Bun places global commands in `~/.bun/bin`. If that directory is not already on
-your PATH, add these lines to `~/.zshrc` or `~/.bashrc`, then open a new
-terminal:
+Bun places global commands in `~/.bun/bin`. If that's not already on your
+PATH, add these lines to `~/.zshrc` or `~/.bashrc`, then open a new terminal:
 
 ```bash
 export BUN_INSTALL="$HOME/.bun"
@@ -131,8 +276,6 @@ export PATH="$BUN_INSTALL/bin:$PATH"
 <details>
 <summary><strong>Chrome is not detected</strong></summary>
 
-Point SceneProof at the local executable:
-
 ```bash
 export SCENEPROOF_CHROME_PATH="/path/to/chrome"
 sceneproof doctor
@@ -143,350 +286,20 @@ sceneproof doctor
 <details>
 <summary><strong>Chromium is blocked by an agent sandbox</strong></summary>
 
-Run `sceneproof` as the direct command with the agent's
-**unsandboxed/local-render permission**. Do not hide it inside a compound shell,
-pipe, or wrapper: those can prevent Chromium from starting before SceneProof can
-return its own diagnostic.
+Run `sceneproof` directly with the agent's **unsandboxed/local-render
+permission** — don't wrap it in a compound shell or pipe, which can stop
+Chromium from starting before SceneProof can even report the failure.
 
 ```bash
 sceneproof doctor
 ```
 
-`doctor` reports executable discovery, browser launch, WebGL availability, an
-actual WebGPU clear-and-readback probe, the active renderer or adapter, and the
-required execution guidance. Merely finding a WebGPU adapter is not counted as
-readiness. Use `sceneproof doctor --require-backend both` when both paths are a
-release requirement. A failed requirement exits non-zero.
+`doctor` checks executable discovery, browser launch, WebGL availability, a
+real WebGPU clear-and-readback probe, and the active renderer/adapter, and
+exits non-zero if a requirement isn't met. Use
+`sceneproof doctor --require-backend both` when both backends are required.
 
 </details>
-
-## Evidence model
-
-| Need | SceneProof evidence |
-| --- | --- |
-| Find the relevant thing | Compact React and Three.js trees with deterministic IDs |
-| Understand why it looks wrong | Bounds, styles, geometry, attribute ranges, materials, uniforms, lights, cameras, and relationships |
-| See it in context | Fresh source-based context renders |
-| Inspect small detail | Target or logical-region rerenders, not enlarged screenshots |
-| Understand 3D form | Source, fitted, filled, or alternate camera views |
-| Find useful evidence quickly | A one-lifecycle Scout portfolio for context, source detail, close detail, and shape |
-| Compare an interaction | Deterministic before/time/settled frames from one bundle and one live scene |
-| Compare an implementation revision | A same-size previous/current contact sheet and amplified difference map |
-| Match a supplied reference | Auditable masks, localized silhouette profiles, paired luminance, pixel probes, unaligned composition, and required comparison review |
-| Bracket a fixture parameter | One-variable contact sheets ranked by an explicit geometry, appearance, composition, or balanced objective |
-| Constrain a 3D form from several views | A labeled reference manifest evaluated per camera in one browser and one bundle |
-| Preserve model context | Compact briefings with lossless evidence available by path only when needed |
-
-SceneProof keeps three accounts of every visual result:
-
-- **Execution:** whether SceneProof completed the requested work and persisted
-  the declared artifacts. The legacy top-level `success` field means only this.
-- **Evidence:** which claims the artifact can actually support: `judgeable`,
-  `partially-judgeable`, `unjudgeable`, or `not-requested`.
-- **Assessment:** who owns the decision and its current verdict. Automated
-  constraints such as motion or delivery scale may pass or fail directly;
-  reference matching remains an agent-owned judgment.
-
-A successful command is therefore not a successful design:
-
-```json
-{
-  "success": true,
-  "execution": { "status": "succeeded", "meaning": "command-execution-only" },
-  "evidence": { "status": "judgeable" },
-  "assessment": {
-    "decisionOwner": "agent",
-    "verdict": "review-required"
-  }
-}
-```
-
-When `--reference` is supplied, SceneProof aligns and measures the subjects and
-produces a reference/current/difference contact sheet plus a silhouette overlay,
-amplified difference map, candidate mask, and cyan mask overlay. It does not
-turn a similarity score into a taste verdict. The agent must first verify that
-the overlay selects the intended subject, then reconcile localized silhouette,
-composition, luminance, and probe deltas with the intended claim. If subject
-extraction or dynamic range is inadequate, the result is `unjudgeable`; the
-agent must not claim a match.
-
-Within that status contract, SceneProof preserves two complementary forms of
-evidence:
-
-- **Structural truth:** what the source produced—hierarchy, identity, bounds,
-  transforms, styles, geometry, materials, lights, cameras, and visibility.
-- **Perceptual truth:** what the result presents—composition, hierarchy,
-  silhouette, depth, density, contrast, clipping, and small-scale detail.
-
-The render exposes the visible result. When it is wrong, the structure often
-reveals why. Neither replaces the other.
-
-`inspect` and `scout` return compact, decision-oriented briefings. Warnings,
-target identity, omission counts, provenance, and the next useful evidence stay
-inline. Exact lossless JSON is written automatically and exposed through
-`evidence.full.path`; the agent opens it only when an omitted fact can change
-the decision.
-
-Piped output is compact JSON for model efficiency. Interactive terminal output
-remains formatted for humans.
-
-Reference comparison deliberately keeps different claims separate. Aligned
-silhouette evidence measures projected shape independent of placement;
-`reference.composition` reports the original viewport center and size deltas;
-paired histograms and repeatable `--probe x,y` samples measure appearance.
-`--sweep-objective geometry|appearance|composition|balanced` chooses which of
-those facts may rank a one-variable `--sweep`.
-
-When independent perspectives are available, declare them instead of asking a
-single hero image to prove unseen geometry:
-
-```json
-{
-  "references": [
-    { "label": "front", "view": "front", "projection": "orthographic", "path": "blueprint.png", "region": [40, 20, 600, 900], "foregroundSeeds": [[0.32, 0.48]], "backgroundSeeds": [[0.08, 0.12]] },
-    { "label": "side", "view": "side", "projection": "orthographic", "path": "blueprint.png", "maskPath": "side-mask.png" }
-  ]
-}
-```
-
-```bash
-sceneproof render scripts/sceneproof/monument.scene.ts three:monument \
-  --reference-set references.json \
-  --out artifacts/monument-reference-set
-```
-
-Each labeled view retains its own camera, projection, mask, artifacts, and
-score. The unified sheet keeps every reference/current/difference row visible,
-and the report names the worst analyzed view. The aggregate never substitutes
-one perspective for another; one unjudgeable view keeps the multi-view verdict
-unjudgeable.
-
-## Agent-facing surface
-
-| Verb | Purpose |
-| --- | --- |
-| `tree` | Navigate semantic structure |
-| `node` | Inspect one exact target and its immediate relationships |
-| `props` | Derive a typed JSON skeleton for a React component export |
-| `inspect` | Reconstruct the source and preserve the canonical scene artifact |
-| `scout` | Discover useful Three.js target cameras in one scene lifecycle |
-| `render` | Produce fresh context or target evidence |
-| `render-region` | Rerender an exact logical viewport patch |
-| `doctor` | Prove Chromium and WebGL/WebGPU readiness and explain required permissions |
-
-SceneProof owns renderer setup and evidence persistence. The agent chooses the
-real source boundary, declared state, semantic target, framing, and evidence
-needed to resolve the uncertainty.
-
-## Inspecting application source
-
-Use an existing product export whenever it already represents the real visual
-boundary. If deterministic setup is needed:
-
-- put a reusable repository-owned inspector in
-  `scripts/sceneproof/<surface>.scene.ts`;
-- put its state snapshots in `scripts/sceneproof/fixtures/`;
-- put a disposable investigation under `/tmp/sceneproof-inspectors/`;
-- never put SceneProof adapters, copied geometry, or invented state in
-  application `src`.
-
-An inspector may import the production owner unchanged, supply deterministic
-props and providers, expose semantic targets, and translate a domain action
-into the real scene lifecycle. It must not reconstruct how the application
-"probably" looks. Source reconstruction proves the current code under the
-declared fixture state; it does not prove parity with an unrecorded live browser
-state.
-
-If the real boundary cannot be loaded without manufacturing the behavior under
-test, visual verification is blocked rather than approximated.
-
-## React quick path
-
-SceneProof accepts a named component export, deterministic JSON props, source
-CSS, workspace aliases, and Tailwind v4 styles:
-
-```bash
-sceneproof tree src/components/DemoCard.tsx \
-  --export DemoCard \
-  --props fixtures/demo-card.json
-
-sceneproof node src/components/DemoCard.tsx \
-  dom:demo-card \
-  --export DemoCard \
-  --props fixtures/demo-card.json
-
-sceneproof render src/components/DemoCard.tsx \
-  dom:demo-card \
-  --export DemoCard \
-  --props fixtures/demo-card.json \
-  --scale 4 \
-  --out artifacts/demo-card.png
-```
-
-For a typed production component whose props are not yet available as a
-fixture, derive the shape instead of reverse-engineering an intersection type
-by hand:
-
-```bash
-sceneproof props src/PricingPanel.tsx \
-  --export PricingPanel \
-  --out scripts/sceneproof/fixtures/pricing-panel.json
-```
-
-`--partial-props` may then deep-complete a supplied partial object with explicit
-typed placeholders. Reports list every synthesized and unsupported path, so a
-placeholder cannot be mistaken for real application state:
-
-```bash
-sceneproof inspect src/PricingPanel.tsx \
-  --export PricingPanel \
-  --props partial-pricing-panel.json \
-  --partial-props
-```
-
-Use `render-region` when the surrounding viewport coordinate system matters.
-It performs a fresh render at the requested device scale; it does not crop and
-enlarge an earlier PNG.
-
-## Three.js quick path
-
-A Three.js entry may use **any export name**. With `--renderer auto`, SceneProof
-selects the requested export and detects Three.js from its `{ scene, camera }`
-return contract. `--renderer three` is the deterministic escape hatch when a
-factory has browser-specific setup. `defineThreeFixture` from
-`sceneproof/three` brands a factory so auto detection does not need to invoke it
-in the probe.
-
-First inspect structure, then let Scout discover informative framing when the
-useful camera is uncertain:
-
-```bash
-sceneproof node scripts/sceneproof/gallery.scene.ts \
-  three:featured-item \
-  --export createGalleryEvidence \
-  --props scripts/sceneproof/fixtures/selected.json
-
-sceneproof scout scripts/sceneproof/gallery.scene.ts \
-  three:featured-item \
-  --export createGalleryEvidence \
-  --props scripts/sceneproof/fixtures/selected.json \
-  --out artifacts/gallery-scout
-```
-
-`--view original --framing source --projection source` preserves the complete
-source camera literally. `--projection perspective|orthographic` converts the
-evidence camera when a supplied image requires a matching projection; conversion
-uses `fit` or `fill` framing and is reported in `camera.projection`. Orthographic
-fit uses the target's projected extent, so a top view is not reduced by height
-that is invisible in that projection. `fit` contains the target. `fill`
-prioritizes target visibility and allows controlled clipping for close
-inspection. Scout provides four different evidence intentions:
-
-- `context`: literal source composition;
-- `sourceDetail`: a fresh source-camera region render;
-- `detail`: a close view ranked for target visibility;
-- `shape`: an alternate view ranked for form evidence.
-
-Only increase `--scale` when those views already frame the relevant evidence
-and raster detail is still limiting.
-
-Fixture-owned actions and deterministic timeline sampling keep transient
-evidence in one real scene lifecycle:
-
-```bash
-sceneproof render scripts/sceneproof/gallery.scene.ts \
-  three:featured-item \
-  --export createGalleryEvidence \
-  --props scripts/sceneproof/fixtures/selected.json \
-  --action select \
-  --frames before,0,80,160,settled \
-  --framing source \
-  --out artifacts/select-transition.png
-```
-
-For a target whose fixture declares relevant surrounding objects, capture the
-context and isolated form from the same live scene rather than approving a form
-against an empty background:
-
-```bash
-sceneproof render scripts/sceneproof/gallery.scene.ts \
-  three:featured-item \
-  --export createGalleryEvidence \
-  --context-pair \
-  --delivery-scale 300 \
-  --out artifacts/item-context-pair
-```
-
-The report states whether context was declared, the actual target height in
-pixels, and whether it satisfied the requested delivery scale. `--in-context`
-and `--isolated` select either view independently; `--isolated` is an alias for
-`--isolate`, and isolation preserves lights.
-
-For the exact lifecycle, semantic target, instance ID, camera, and diagnostic
-contracts, read [the Three.js fixture protocol](docs/three-fixtures.md).
-
-### WebGL and WebGPU
-
-WebGL remains the compatibility-first default. Select WebGPU explicitly when
-the source is WebGPU-compatible:
-
-```bash
-sceneproof render scripts/sceneproof/gallery.scene.ts \
-  three:featured-item \
-  --three-backend webgpu \
-  --framing source \
-  --out artifacts/gallery-webgpu.png
-```
-
-SceneProof reports `graphics.requested`, `renderer`, `actual`, `fallback`,
-adapter identity, and rasterizer provenance. A WebGPU request is strict: if
-Three.js falls back to WebGL2, the command fails instead of mislabeling the
-artifact. WebGPU entries are bundled against `three/webgpu`; GLSL
-`ShaderMaterial`, `RawShaderMaterial`, custom `onBeforeCompile`, and addons that
-depend on WebGL-only Three.js exports are rejected with migration guidance.
-Use TSL/NodeMaterial and WebGPU-compatible addons for that path, or request
-`--three-backend webgl` deliberately.
-
-WebGPU is not automatically faster or visually better. Headless Chromium may
-expose a fallback adapter such as SwiftShader; those artifacts can prove
-rendering and visual behavior, but they are not real-GPU performance evidence.
-The report preserves that distinction rather than treating backend availability
-as a quality verdict. On Linux, SceneProof selects Chromium's SwiftShader
-WebGPU adapter for deterministic headless capture and reads the rendered GPU
-texture directly because the presentation canvas is transient. Use the
-reported backend and adapter as provenance, never as a performance claim.
-
-## Current scope
-
-SceneProof currently supports:
-
-- TypeScript and JavaScript source entries;
-- React DOM, computed styles, semantic text and roles, SVG subtrees, and
-  logical-region rendering;
-- workspace `@/` imports, JSON props, source CSS, and Tailwind v4;
-- Three.js scene graphs, transforms, world bounds, BufferGeometry attributes,
-  materials, shader uniforms, textures, lights, cameras, and relationships;
-- explicit WebGL and WebGPU capture with backend, adapter, fallback, and
-  rasterizer provenance; strict WebGPU compatibility checks prevent silent
-  WebGL substitution or partial GLSL evidence;
-- custom-named Three.js factories, deterministic props/actions/time, source
-  camera preservation, semantic targets, stable `InstancedMesh` instance IDs,
-  and single-lifecycle frame sequences;
-- full-quality source rerendering, target-aware camera control, bounded source
-  region rendering, information-gain Scout portfolios, and compact evidence
-  briefings;
-- reference/current/difference comparison, amplified adjacent-frame
-  differences, seed-assisted and explicit mask audit artifacts, 101-row
-  silhouette profile deltas, fitted-spline silhouette deviation,
-  context/isolated pairs, and delivery-scale assertions;
-- typed React prop skeletons and explicitly provenance-marked partial-prop
-  completion.
-
-SVG-native export is not implemented. The GitHub installation uses SceneProof's
-linked source entry. The standalone Bun compiled binary remains experimental
-for arbitrary workspace entries with nested package imports. WebGPU support is
-bounded by the source's Three.js compatibility: SceneProof does not translate
-GLSL shaders or WebGL-only addons into TSL.
 
 ## Development
 
@@ -509,9 +322,8 @@ bun run cli --help
 bun run check
 ```
 
-The public gate runs lint, strict TypeScript 7 typechecking, the self-contained
-browser-backed test harness, the Bun compiled build, and a compiled typed-props
-smoke test.
+Runs lint, strict TypeScript 7 typechecking, the browser-backed test harness,
+the Bun compiled build, and a compiled typed-props smoke test.
 
 </details>
 
