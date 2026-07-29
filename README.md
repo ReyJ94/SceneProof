@@ -7,52 +7,88 @@
 </p>
 
 <p align="center">
-  <strong>Source-grounded visual perception for coding agents.</strong><br />
-  Inspect, focus, and verify UI and 3D work at full quality.
+  <strong>Give coding agents eyes for the UI and 3D work they build.</strong><br />
+  SceneProof reconstructs your real source, renders it faithfully, and hands
+  agents evidence they can actually judge—not a screenshot to guess from.
 </p>
 
 <p align="center">
   <a href="https://github.com/ReyJ94/SceneProof/releases/tag/v0.6.0"><img alt="Release v0.6.0" src="https://img.shields.io/badge/release-v0.6.0-E6A34D?style=flat-square" /></a>
+  <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-6B8E9E?style=flat-square" /></a>
 </p>
 
-SceneProof lets coding agents see the interfaces and Three.js scenes they
-build. It reconstructs the real source, exposes the structure that explains the
-render, and produces exactly the context or detail view needed for reliable
-visual judgment.
-
-Agents can recognize what they made, understand why it looks wrong, and ground
-their final judgment in falsifiable visual evidence—instead of coding UI and 3D
-blind.
-
-**New in v0.6.0:** convert evidence cameras explicitly between perspective and
-orthographic projection, audit seed-assisted reference masks before trusting
-metrics, localize silhouette disagreement over 101 height samples, and keep
-every supplied view visible in one non-substituting comparison sheet.
-
-**New in v0.5.0:** render Three.js fixtures through explicit WebGL or WebGPU
-backends, prove the actual backend and adapter in every report, and reject
-silent WebGL fallback or incompatible GLSL-only material paths.
-
-**New in v0.4.0:** distinguish execution from visual acceptance, derive typed
-React prop fixtures, compare targets in context and isolation, assert delivery
-scale, and expose amplified motion and fitted-silhouette evidence.
-
-**New in v0.3.0:** compare renders with supplied references, measure silhouette
-and luminance deltas, probe exact subject-relative pixels, bracket fixture
-parameters in one sweep, and constrain 3D work from labeled reference views.
-
 ## Install
-
-SceneProof requires [Bun](https://bun.com/docs/installation) 1.3.14 or newer
-and a local Chrome or Chromium installation.
 
 ```bash
 bun add --global github:ReyJ94/SceneProof
 sceneproof --help
 ```
 
-That is the complete installation. It installs SceneProof directly from this
-repository, including its runtime dependencies and global `sceneproof` command.
+Requires [Bun](https://bun.com/docs/installation) 1.3.14+ and a local Chrome or
+Chromium install. That's the whole setup—see [troubleshooting](#troubleshooting)
+below if anything doesn't come up clean.
+
+## Why agents need this
+
+Coding agents are good at reading and changing source. They're bad at *seeing*
+what that source actually produces.
+
+Source proves a component or mesh exists—not that it's legible, well-lit, or
+even visible. A screenshot shows pixels, but throws away hierarchy, material
+state, and geometry; enlarging it never recovers detail that was never
+rendered. Clicking through a browser proves interaction works, not that the
+result looks right.
+
+SceneProof gives an agent a real development loop instead: map the UI or scene
+into stable targets, inspect the structure behind whatever looks uncertain,
+frame the region that actually matters, render fresh evidence at the quality
+the judgment needs, and verify the artifact instead of trusting plausible code.
+
+## Try it in 30 seconds
+
+Point it at any component you already have, with whatever props it needs:
+
+```bash
+sceneproof render src/components/DemoCard.tsx \
+  dom:demo-card \
+  --export DemoCard \
+  --props fixtures/demo-card.json \
+  --scale 4 \
+  --out artifacts/demo-card.png
+```
+
+That's a fresh, full-quality render straight from your own source—no
+screenshot, no headless-browser click-through. From here: [`tree`](#agent-facing-surface)
+to browse structure, [`scout`](#threejs-quick-path) to find a good Three.js
+camera automatically, or the [React](#react-quick-path) and
+[Three.js](#threejs-quick-path) quick paths below for the full picture.
+
+## What's new in v0.6.0
+
+Evidence cameras now convert explicitly between perspective and orthographic
+projection, seed-assisted reference masks can be audited before you trust their
+metrics, silhouette disagreement is localized over 101 height samples, and
+every supplied reference view stays visible in one non-substituting comparison
+sheet.
+
+<details>
+<summary>Earlier releases</summary>
+
+**v0.5.0** — render Three.js fixtures through explicit WebGL or WebGPU
+backends, prove the actual backend and adapter in every report, and reject
+silent WebGL fallback or incompatible GLSL-only material paths.
+
+**v0.4.0** — distinguish execution from visual acceptance, derive typed React
+prop fixtures, compare targets in context and isolation, assert delivery
+scale, and expose amplified motion and fitted-silhouette evidence.
+
+**v0.3.0** — compare renders with supplied references, measure silhouette and
+luminance deltas, probe exact subject-relative pixels, bracket fixture
+parameters in one sweep, and constrain 3D work from labeled reference views.
+
+</details>
+
+## Troubleshooting
 
 <details>
 <summary><strong>I do not have Bun yet</strong></summary>
@@ -120,19 +156,9 @@ release requirement. A failed requirement exits non-zero.
 
 </details>
 
-## The missing development loop
+## How the loop works
 
-Coding agents are strong at reading source and changing it. Their visual
-feedback remains weak.
-
-Source code can prove that a component or mesh exists, but not that it is
-legible, well-composed, correctly lit, or even visible. A screenshot shows
-pixels, but loses hierarchy, material state, geometry, and ownership. Enlarging
-that screenshot does not recover detail that was never rendered. A browser
-harness can click through an application, but interaction is not visual
-understanding.
-
-SceneProof closes the loop:
+SceneProof closes the gap described above in five steps:
 
 1. **Map** the real UI or scene into stable semantic targets.
 2. **Inspect** the exact structure behind the uncertain result.
