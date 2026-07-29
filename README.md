@@ -17,6 +17,27 @@
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-6B8E9E?style=flat-square" /></a>
 </p>
 
+## Why agents need this
+
+Coding agents are good at reading and changing source. They're bad at *seeing*
+what that source actually produces—and that gap is where a lot of UI and 3D
+work quietly goes wrong.
+
+Source proves a component or mesh exists. It doesn't prove the result is
+legible, well-lit, or even visible. A screenshot shows pixels, but throws away
+hierarchy, material state, and geometry; enlarging it never recovers detail
+that was never rendered in the first place. Clicking through a browser proves
+interaction works, not that the result looks right. So agents end up shipping
+UI and 3D changes on faith, then get surprised when a human opens the app.
+
+SceneProof closes that gap. It reconstructs your real source, renders it at
+full quality, and gives the agent structural and visual evidence it can
+actually reason about—instead of a screenshot to guess from. Concretely, it
+lets an agent map the UI or scene into stable targets, inspect the structure
+behind whatever looks uncertain, frame the region that actually matters,
+render fresh evidence at the quality the judgment needs, and verify the
+artifact instead of trusting plausible-looking code.
+
 ## Install
 
 ```bash
@@ -27,22 +48,6 @@ sceneproof --help
 Requires [Bun](https://bun.com/docs/installation) 1.3.14+ and a local Chrome or
 Chromium install. That's the whole setup—see [troubleshooting](#troubleshooting)
 below if anything doesn't come up clean.
-
-## Why agents need this
-
-Coding agents are good at reading and changing source. They're bad at *seeing*
-what that source actually produces.
-
-Source proves a component or mesh exists—not that it's legible, well-lit, or
-even visible. A screenshot shows pixels, but throws away hierarchy, material
-state, and geometry; enlarging it never recovers detail that was never
-rendered. Clicking through a browser proves interaction works, not that the
-result looks right.
-
-SceneProof gives an agent a real development loop instead: map the UI or scene
-into stable targets, inspect the structure behind whatever looks uncertain,
-frame the region that actually matters, render fresh evidence at the quality
-the judgment needs, and verify the artifact instead of trusting plausible code.
 
 ## Try it in 30 seconds
 
