@@ -17,26 +17,25 @@
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-6B8E9E?style=flat-square" /></a>
 </p>
 
-## Why agents need this
+## The gap this closes
 
-Coding agents are good at reading and changing source. They're bad at *seeing*
-what that source actually produces—and that gap is where a lot of UI and 3D
-work quietly goes wrong.
+Coding agents read source fluently and edit it with confidence. They are much
+worse at *seeing* what that source actually produces—and that blind spot is
+where UI and 3D work quietly goes wrong.
 
 Source proves a component or mesh exists. It doesn't prove the result is
-legible, well-lit, or even visible. A screenshot shows pixels, but throws away
-hierarchy, material state, and geometry; enlarging it never recovers detail
-that was never rendered in the first place. Clicking through a browser proves
-interaction works, not that the result looks right. So agents end up shipping
-UI and 3D changes on faith, then get surprised when a human opens the app.
+legible, well-lit, correctly composed, or even visible. A screenshot shows
+pixels, but throws away hierarchy, material state, and geometry—enlarging it
+never recovers detail that was never rendered. Clicking through a browser
+proves interaction works, not that the result looks right. So an agent ships
+on faith, and the mismatch surfaces only when a human opens the app.
 
-SceneProof closes that gap. It reconstructs your real source, renders it at
-full quality, and gives the agent structural and visual evidence it can
-actually reason about—instead of a screenshot to guess from. Concretely, it
-lets an agent map the UI or scene into stable targets, inspect the structure
-behind whatever looks uncertain, frame the region that actually matters,
-render fresh evidence at the quality the judgment needs, and verify the
-artifact instead of trusting plausible-looking code.
+SceneProof gives the agent a real loop instead: map the UI or scene into
+stable targets, inspect the structure behind whatever looks uncertain, frame
+the region that actually matters, render fresh evidence at the quality the
+judgment needs, and verify the result instead of trusting plausible-looking
+code. Camera and region selection come before pixel density—more pixels only
+help once the frame already holds the evidence that matters.
 
 ## Install
 
@@ -45,11 +44,11 @@ bun add --global github:ReyJ94/SceneProof
 sceneproof --help
 ```
 
-Requires [Bun](https://bun.com/docs/installation) 1.3.14+ and a local Chrome or
-Chromium install. That's the whole setup—see [troubleshooting](#troubleshooting)
-below if anything doesn't come up clean.
+Requires [Bun](https://bun.com/docs/installation) 1.3.14+ and a local Chrome
+or Chromium install. That's the whole setup—see
+[troubleshooting](#troubleshooting) if anything doesn't come up clean.
 
-## Try it in 30 seconds
+## Try it
 
 Point it at any component you already have, with whatever props it needs:
 
@@ -71,10 +70,10 @@ camera automatically, or the [React](#react-quick-path) and
 ## What's new in v0.6.0
 
 Evidence cameras now convert explicitly between perspective and orthographic
-projection, seed-assisted reference masks can be audited before you trust their
-metrics, silhouette disagreement is localized over 101 height samples, and
-every supplied reference view stays visible in one non-substituting comparison
-sheet.
+projection, seed-assisted reference masks can be audited before you trust
+their metrics, silhouette disagreement is localized over 101 height samples,
+and every supplied reference view stays visible in one non-substituting
+comparison sheet.
 
 <details>
 <summary>Earlier releases</summary>
@@ -160,22 +159,6 @@ readiness. Use `sceneproof doctor --require-backend both` when both paths are a
 release requirement. A failed requirement exits non-zero.
 
 </details>
-
-## How the loop works
-
-SceneProof closes the gap described above in five steps:
-
-1. **Map** the real UI or scene into stable semantic targets.
-2. **Inspect** the exact structure behind the uncertain result.
-3. **Frame** the relevant component, region, object, or world-space patch so it
-   occupies an informative part of the image.
-4. **Render** fresh evidence from source at the quality the remaining judgment
-   requires.
-5. **Verify** the artifact instead of inferring visual quality from plausible
-   code.
-
-Camera and region selection come before pixel density. More pixels help only
-when the image already presents the evidence that matters.
 
 ## Evidence model
 
@@ -310,7 +293,7 @@ boundary. If deterministic setup is needed:
 An inspector may import the production owner unchanged, supply deterministic
 props and providers, expose semantic targets, and translate a domain action
 into the real scene lifecycle. It must not reconstruct how the application
-“probably” looks. Source reconstruction proves the current code under the
+"probably" looks. Source reconstruction proves the current code under the
 declared fixture state; it does not prove parity with an unrecorded live browser
 state.
 
