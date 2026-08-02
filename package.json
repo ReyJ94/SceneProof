@@ -15,6 +15,7 @@
   "files": [
     "src",
     "docs",
+    "skills",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"

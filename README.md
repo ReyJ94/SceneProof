@@ -36,6 +36,20 @@ Needs [Bun](https://bun.com/docs/installation) 1.3.14+ and a local Chrome or
 Chromium. If something doesn't come up clean, check
 [troubleshooting](#troubleshooting).
 
+Using a coding agent? Install the bundled skill so it knows *how to reason*
+with SceneProof, not just that the commands exist — for Claude Code:
+
+```bash
+mkdir -p ~/.claude/skills/sceneproof
+curl -fsSL https://raw.githubusercontent.com/ReyJ94/SceneProof/main/skills/sceneproof/SKILL.md \
+  -o ~/.claude/skills/sceneproof/SKILL.md
+```
+
+The CLI teaches commands through `--help` and in-report recommendations; the
+[skill](skills/sceneproof/SKILL.md) teaches the evidence discipline — what to
+resolve first, when a render is worth trusting, and when a claim isn't
+allowed yet.
+
 ## Try it
 
 ```bash
