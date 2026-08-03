@@ -11,7 +11,7 @@
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-6B8E9E?style=flat-square" /></a>
 </p>
 
-SceneProof turns visual work into a loop an agent can actually run. It renders
+SceneProof turns visual work into a loop a coding agent can follow. It renders
 your React components and Three.js scenes straight from source, then pairs the
 image with the structure and context behind it. The agent can see what changed,
 understand why, and keep working instead of guessing from code.
