@@ -48,26 +48,25 @@ the state was exported from the same application boundary and its freshness is
 known. If the real behavior cannot be represented without reimplementing it,
 report the visual check as blocked.
 
-## Result status contract
+## Result contract
 
-Visual commands report three distinct layers:
+Visual commands default to a compact agent briefing with distinct layers:
 
 - `execution.status` says only whether the command ran and wrote its artifacts;
-- `evidence.status` says whether the pixels can support the requested claim;
-- `assessment` names the decision owner and verdict.
+- `artifacts` identifies what the agent should open;
+- `provenance` identifies source, fixture state, aliases, CSS, and manifests;
+- `facts` contains structure and measurements without turning them into taste;
+- `assertions` contains only explicitly requested mechanical checks;
+- `warnings` names concrete limitations such as missing context or software
+  rasterization;
+- `review` keeps `decisionOwner: "agent"` and says to open the artifact before
+  making a visual claim.
 
-The top-level `success` field is retained for compatibility and is exactly
-execution success, not visual acceptance. For example, a frame action with no
-visible transition can return `success: true` and
-`assessment.verdict: "failed"`. A completed reference comparison returns
-`assessment.verdict: "review-required"` with `decisionOwner: "agent"`; the
-agent must inspect reference/current/difference artifacts and decide whether
-the measured discrepancies satisfy the actual design claim. SceneProof does
-not award an automatic visual pass from a scalar similarity score.
-
-When luminance, framing, subject extraction, context, or another prerequisite
-cannot carry the intended claim, evidence is partial or unjudgeable. That is a
-hard boundary against approval, not a soft warning.
+Use `--json` for the complete factual report. Neither form awards an automatic
+visual pass from luminance spread, a scalar similarity score, or command
+success. Low contrast, weak framing, uncertain subject extraction, or absent
+context remain useful facts and warnings; the CLI does not possess a model and
+does not manufacture a universal verdict from them.
 
 ## Minimal factory
 
@@ -205,16 +204,15 @@ frame. Orthographic framing fits the target's projected corners rather than its
 world-space bounding sphere. This matters for front, side, and top blueprints:
 extent along the view axis must not make the visible form artificially small.
 
-`--delivery-scale <pixels>` asserts the logical on-screen target height at the
+`--delivery-scale <pixels>` explicitly checks the logical on-screen target height at the
 resolved camera. The default tolerance is 5%; override it with
 `--delivery-tolerance <fraction>`. A miss does not mean rendering failed:
-execution succeeds while the delivery-scale assessment fails. This separation
-prevents a technically valid artifact at the wrong user-visible size from being
-approved.
+execution succeeds while the requested mechanical assertion fails. Visual
+acceptance remains separate.
 
 ## Scout evidence portfolio
 
-Scout returns four intent-specific recommendations:
+Scout returns four intent-specific, copy-ready suggestions:
 
 - `context`: the literal source-camera view;
 - `sourceDetail`: a fresh rerender of the target's padded projected region
@@ -222,16 +220,14 @@ Scout returns four intent-specific recommendations:
 - `detail`: a close target-camera view selected primarily by target visibility;
 - `shape`: an alternate view selected for useful edge and contrast evidence.
 
-The report includes `diagnosis.limitingFactor`. When the target is too small,
-the answer is `framing`, not higher image quality. Additional raster scale is
-appropriate only after the target already occupies an informative portion of
-the frame. Open the contact sheet and judge the alternatives; the numeric
-ranking narrows inspection but does not replace visual judgment.
+The report includes `diagnosis.limitingFactor`. When the target occupies little
+of the frame, that measurement supports trying a tighter framing before merely
+increasing raster scale. Open the contact sheet and judge the alternatives;
+candidate scores narrow inspection but do not replace visual judgment.
 
-Scout and render quality reports also separate coverage from contrast. Surface
-claims become unjudgeable when the target's luminance spread falls below the
-reported floor; low-information pixels cannot support a surface-quality
-verdict merely because the artifact exists.
+Scout and render reports also expose coverage and luminance measurements. These
+can warn an agent that evidence may be weak, but SceneProof does not convert a
+global luminance threshold into a visual-quality verdict.
 
 ## Reference, comparison, and sweep evidence
 
@@ -258,33 +254,34 @@ report keeps:
   meaning, verification state, and generated mask artifacts;
 - reference, mask, region, and generated-artifact provenance.
 
-`--sweep prop.path=a,b,c` creates fresh scene instances in one browser and one
-bundle. With a reference, declare the ranking contract explicitly:
+Use `sceneproof matrix` for new parameter studies. Its manifest accepts two to
+twelve labeled variants, each with a nested `props` delta, and writes individual
+renders plus one contact sheet and adjacent raster comparisons:
 
 ```bash
-sceneproof render scene.ts three:subject \
-  --reference target.png \
-  --reference-mask target-mask.png \
-  --sweep roughness=0.35,0.5,0.65 \
-  --sweep-objective appearance \
-  --out artifacts/roughness-sweep.png
+sceneproof matrix scene.ts three:subject \
+  --props fixtures/base.json \
+  --variants fixtures/variants.json \
+  --out artifacts/subject-matrix
 ```
 
-The four objectives are `geometry`, `appearance`, `composition`, and
-`balanced`. A recommendation is only the best candidate under that declared
-evidence contract; it is not a taste verdict. Sweep paths address fixture
-`context.props`. SceneProof deliberately does not rewrite hidden module
-constants; when all variants are visually identical, `sweepability` reports a
-no-op and tells the fixture author to expose the intended degree of freedom.
+SceneProof does not rank a visual winner. It reports the labeled states and
+measured differences; the agent reads the sheet. Three.js matrices currently
+vary fixture props; React matrices may also declare a checksum-guarded exact
+`sourceOverlays` replacement for a sealed module constant. The overlay is
+applied only in memory, must match one location, and never edits production
+source. The older scalar `--sweep` and `--sweep-objective` flags remain
+compatibility-only.
 
 For genuinely different supplied perspectives, use `--reference-set` with a
 JSON manifest containing two to eight labeled entries. Each entry may declare
 `view`, `projection`, `framing`, `zoom`, `path`, `maskPath`, `region`,
 `foregroundSeeds`, `backgroundSeeds`, and `probes`. Relative paths resolve from
 the manifest. SceneProof uses one browser and one bundle, creates one
-attributable scene per view, reports each comparison separately, names the
-worst analyzed view, and writes one unified contact sheet. An unjudgeable view
-keeps the set unjudgeable; the mean never hides a failed perspective.
+attributable scene per view, reports each comparison separately, identifies the
+weakest measured view, and writes one unified contact sheet. The agent inspects
+the per-view evidence; an aggregate does not erase a missing or low-confidence
+perspective.
 
 Frame sequences persist an amplified difference panel for every adjacent pair,
 alongside normalized raster delta, changed-signal coverage, and classification.

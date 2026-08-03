@@ -3,11 +3,13 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { Command } from "commander";
+import { Command, Option } from "commander";
 import { z } from "zod";
 
 import packageMetadata from "../package.json" with { type: "json" };
+import { createAgentBriefing, createFullAgentReport } from "./agent-report.js";
 import { diagnoseBrowser } from "./browser-runtime.js";
+import { renderEvidenceSheet } from "./contact-sheet.js";
 import {
   persistJsonEvidence,
   referenceJsonEvidence,
@@ -17,6 +19,7 @@ import {
   inspectReact,
   renderReact,
   renderReactRegion,
+  renderReactVariants,
 } from "./react-renderer.js";
 import {
   type ReferenceViewInput,
@@ -34,6 +37,7 @@ import type {
   ScoutReport,
 } from "./scene-schema.js";
 import { resolveSceneNodeId } from "./scene-schema.js";
+import type { SourceOverlay } from "./source-bundle.js";
 import { renderThreeContextPair } from "./three-context-pair.js";
 import {
   type FixtureProvenance,
@@ -46,7 +50,8 @@ import {
   type ThreeProjection,
   type ThreeTargetView,
 } from "./three-renderer.js";
-import { renderThreeSweep } from "./three-sweep.js";
+import { renderThreeMatrix, renderThreeSweep } from "./three-sweep.js";
+import { type MatrixVariant, renderVariantMatrix } from "./variant-matrix.js";
 
 const rendererProbeInput = rendererProbeInputFromEnvironment();
 if (rendererProbeInput) {
@@ -79,6 +84,36 @@ const Vector3Tuple = z.tuple([
   z.coerce.number(),
   z.coerce.number(),
 ]);
+const MatrixManifestSchema = z.object({
+  variants: z
+    .array(
+      z.object({
+        label: z.string().trim().min(1),
+        props: PropsSchema,
+        sourceOverlays: z
+          .array(
+            z.object({
+              expectedDigest: z
+                .string()
+                .regex(/^sha256:[a-f0-9]{64}$/)
+                .optional(),
+              file: z.string().min(1),
+              replacements: z
+                .array(
+                  z.object({
+                    from: z.string().min(1),
+                    to: z.string(),
+                  })
+                )
+                .min(1),
+            })
+          )
+          .default([]),
+      })
+    )
+    .min(2)
+    .max(12),
+});
 const VIEW_PRESETS = {
   front: { azimuth: -90, elevation: 0 },
   isometric: { azimuth: -45, elevation: 35 },
@@ -89,6 +124,7 @@ const VIEW_PRESETS = {
 type CommonOptions = {
   action?: string;
   actionInput?: string;
+  alias?: string[];
   export: string;
   props?: string;
   partialProps?: boolean;
@@ -126,6 +162,7 @@ type RenderOptions = CommonOptions & {
 
 function fixtureOptions(command: Command, defaultExport: string): Command {
   return command
+    .optionsGroup("Fixture and viewport:")
     .option("--export <name>", "named module export", defaultExport)
     .option(
       "--renderer <auto|react|three>",
@@ -150,19 +187,31 @@ function fixtureOptions(command: Command, defaultExport: string): Command {
 }
 
 function sourceOptions(command: Command): Command {
-  return fixtureOptions(command, "default").option(
-    "--css <files...>",
-    "source CSS files to compile and load"
-  );
+  return fixtureOptions(command, "default")
+    .optionsGroup("Browser source:")
+    .option(
+      "--css <file>",
+      "source CSS file to compile and load; repeatable in cascade order",
+      (value: string, previous: string[]) => [...previous, value],
+      []
+    )
+    .option(
+      "--alias <specifier=path>",
+      "replace a browser-bundle module with an explicit local source file; repeatable",
+      (value: string, previous: string[]) => [...previous, value],
+      []
+    );
 }
 
 function renderOptions(command: Command): Command {
   return sourceOptions(command)
+    .optionsGroup("Raster output:")
     .option(
       "--scale <number>",
       "source pixel density; use --zoom to move a Three.js camera",
       "1"
     )
+    .optionsGroup("Three.js framing and evidence:")
     .option(
       "--framing <source|fit|fill>",
       "Three.js framing: literal source camera, contained target, or close target"
@@ -202,6 +251,7 @@ function renderOptions(command: Command): Command {
       "--silhouette",
       "extract a target-only mask and geometric contour measurements"
     )
+    .optionsGroup("Reference analysis:")
     .option(
       "--reference <image>",
       "compare the target with a reference image using aligned subject evidence"
@@ -236,20 +286,34 @@ function renderOptions(command: Command): Command {
       (value: string, previous: string[]) => [...previous, value],
       []
     )
-    .option(
-      "--sweep <prop.path=values>",
-      "render 2-12 comma-separated scalar values for one fixture-prop path"
+    .addOption(
+      new Option(
+        "--sweep <prop.path=values>",
+        "deprecated scalar sweep; use the matrix command"
+      ).hideHelp()
     )
-    .option(
-      "--sweep-objective <balanced|geometry|appearance|composition>",
-      "choose which reference evidence ranks sweep variants",
-      "balanced"
+    .addOption(
+      new Option(
+        "--sweep-objective <balanced|geometry|appearance|composition>",
+        "deprecated sweep ranking objective"
+      )
+        .default("balanced")
+        .hideHelp()
     )
+    .optionsGroup("Output:")
     .option("--out <path>", "artifact output path");
 }
 
 function scoutOptions(command: Command): Command {
   return fixtureOptions(command, "createScene")
+    .optionsGroup("Browser source:")
+    .option(
+      "--alias <specifier=path>",
+      "replace a browser-bundle module with an explicit local source file; repeatable",
+      (value: string, previous: string[]) => [...previous, value],
+      []
+    )
+    .optionsGroup("Scout evidence:")
     .option("--focus-node <node-id>", "center cameras on another scene node")
     .option("--look-at <x,y,z>", "center cameras on a world-space point")
     .option("--isolate", "isolate the target (the Scout default)")
@@ -291,9 +355,19 @@ async function loadJsonInput(
   };
 }
 
-function output(value: unknown): void {
+function output(
+  value: unknown,
+  options: { command?: string; visual?: boolean } = {}
+): void {
+  const internalRawReport = process.env.SCENEPROOF_INTERNAL_RAW_REPORT === "1";
+  let presented = value;
+  if (options.visual && !internalRawReport) {
+    presented = program.opts().json
+      ? createFullAgentReport(value)
+      : createAgentBriefing(options.command ?? "render", value);
+  }
   const indentation = process.stdout.isTTY ? 2 : undefined;
-  process.stdout.write(`${JSON.stringify(value, null, indentation)}\n`);
+  process.stdout.write(`${JSON.stringify(presented, null, indentation)}\n`);
 }
 
 function roundMetric(value: number): number {
@@ -331,6 +405,10 @@ async function inspectBriefing(scene: SceneArtifact) {
 }
 
 async function scoutBriefing(report: ScoutReport) {
+  const provenance = report.provenance as
+    | { aliases?: Record<string, string> }
+    | undefined;
+  const aliases = provenance?.aliases ?? {};
   const shown = [...report.candidates]
     .sort((left, right) => right.score - left.score)
     .slice(0, 3)
@@ -379,6 +457,7 @@ async function scoutBriefing(report: ScoutReport) {
       : undefined,
     lifecycle: report.lifecycle,
     presentation: "brief",
+    ...(Object.keys(aliases).length > 0 ? { provenance: { aliases } } : {}),
     rasterizer: report.rasterizer,
     recommendations: report.recommendations,
     recommended: {
@@ -399,6 +478,7 @@ async function scoutBriefing(report: ScoutReport) {
 type PreparedSource = {
   absoluteEntry: string;
   actionInput: Record<string, unknown>;
+  aliases: Record<string, string>;
   fixture: FixtureProvenance;
   height: number;
   props: Record<string, unknown>;
@@ -415,6 +495,17 @@ async function prepareSource(
   const height = PositiveInteger.parse(raw.height);
   const width = PositiveInteger.parse(raw.width);
   const absoluteEntry = resolve(entry);
+  const aliases = Object.fromEntries(
+    (raw.alias ?? []).map((value) => {
+      const separator = value.indexOf("=");
+      if (separator <= 0 || separator === value.length - 1) {
+        throw new Error(
+          "--alias requires specifier=path with a non-empty module specifier and local path."
+        );
+      }
+      return [value.slice(0, separator), resolve(value.slice(separator + 1))];
+    })
+  );
   const props = await loadJsonInput(raw.props, "Props");
   const completion = raw.partialProps
     ? await completeReactProps({
@@ -432,6 +523,7 @@ async function prepareSource(
   const renderer =
     requestedRenderer === "auto"
       ? await detectRenderer({
+          aliases,
           entry: absoluteEntry,
           exportName: raw.export,
           height,
@@ -452,6 +544,7 @@ async function prepareSource(
   return {
     absoluteEntry,
     actionInput: actionInput.value,
+    aliases,
     fixture: {
       action: raw.action
         ? {
@@ -600,6 +693,30 @@ async function parseReferenceSet(path: string): Promise<ReferenceViewInput[]> {
   });
 }
 
+async function parseMatrixManifest(path: string): Promise<{
+  digest: string;
+  path: string;
+  variants: MatrixVariant[];
+}> {
+  const absolute = resolve(path);
+  const source = await readFile(absolute, "utf8");
+  const parsed = MatrixManifestSchema.parse(JSON.parse(source));
+  return {
+    digest: `sha256:${createHash("sha256").update(source).digest("hex")}`,
+    path: absolute,
+    variants: parsed.variants.map((variant) => ({
+      ...variant,
+      sourceOverlays: variant.sourceOverlays.map((overlay) => ({
+        ...(overlay.expectedDigest
+          ? { expectedDigest: overlay.expectedDigest }
+          : {}),
+        file: resolve(dirname(absolute), overlay.file),
+        replacements: overlay.replacements,
+      })),
+    })),
+  };
+}
+
 function parseThreeView(
   value: string | undefined
 ): ThreeTargetView | undefined {
@@ -630,6 +747,7 @@ async function inspectEntry(
     const scene = await inspectThree({
       ...(raw.action === undefined ? {} : { action: raw.action }),
       actionInput: prepared.actionInput,
+      aliases: prepared.aliases,
       entry: prepared.absoluteEntry,
       exportName: raw.export,
       fixture: prepared.fixture,
@@ -641,10 +759,16 @@ async function inspectEntry(
     return {
       ...scene,
       fixture: prepared.fixture,
+      mount: {
+        aliases: prepared.aliases,
+        document: {},
+        fixture: Boolean(prepared.fixture),
+      },
       renderer: "three",
     };
   }
   const scene = await inspectReact({
+    aliases: prepared.aliases,
     css: (raw.css ?? []).map((path) => resolve(path)),
     entry: prepared.absoluteEntry,
     exportName: raw.export,
@@ -655,6 +779,14 @@ async function inspectEntry(
   return {
     ...scene,
     fixture: prepared.fixture,
+    ...(scene.mount
+      ? {
+          mount: {
+            ...scene.mount,
+            css: (raw.css ?? []).map((path) => resolve(path)),
+          },
+        }
+      : {}),
     renderer: "react",
   };
 }
@@ -732,6 +864,7 @@ function compactTree(scene: SceneArtifact) {
     fixture: scene.fixture,
     ...(prunedNodes > 0 ? { prunedHiddenNodes: prunedNodes } : {}),
     renderer: scene.renderer,
+    ...(scene.mount ? { mount: scene.mount } : {}),
     roots,
     viewport: scene.viewport,
     warnings: scene.warnings,
@@ -768,6 +901,7 @@ function nodeDetail(scene: SceneArtifact, nodeId: string) {
     entry: scene.entry,
     export: scene.export,
     fixture: scene.fixture,
+    ...(scene.mount ? { mount: scene.mount } : {}),
     node,
     renderer: scene.renderer,
     ...(parentId ? { parent: summary(parentId) } : {}),
@@ -776,7 +910,11 @@ function nodeDetail(scene: SceneArtifact, nodeId: string) {
 
 const program = new Command()
   .name("sceneproof")
-  .description("Source-grounded visual perception for coding agents")
+  .description("Source-grounded visual evidence harness for coding agents")
+  .option(
+    "--json",
+    "emit the complete factual report instead of an agent briefing"
+  )
   .version(packageMetadata.version);
 
 sourceOptions(
@@ -793,13 +931,17 @@ program
   .description("derive a JSON fixture skeleton from a typed React export")
   .argument("<entry>", "TypeScript or JavaScript source entry")
   .option("--export <name>", "named React component export", "default")
-  .requiredOption("--out <file>", "JSON props skeleton output path")
+  .option("--out <file>", "write the JSON props skeleton to a file")
   .action(
     async (
       entry: string,
-      raw: { export: string; out: string }
+      raw: { export: string; out?: string }
     ): Promise<void> => {
       const template = await inferReactPropsTemplate(entry, raw.export);
+      if (!raw.out) {
+        output(template.props);
+        return;
+      }
       const artifact = resolve(raw.out);
       await mkdir(dirname(artifact), { recursive: true });
       await writeFile(artifact, `${JSON.stringify(template.props, null, 2)}\n`);
@@ -813,6 +955,176 @@ program
       });
     }
   );
+
+program
+  .command("sheet")
+  .description(
+    "compose 2-12 labeled PNG artifacts into one attributable review sheet"
+  )
+  .requiredOption(
+    "--item <label=path>",
+    "labeled PNG input; repeat in the order it should appear",
+    (value: string, previous: string[]) => [...previous, value],
+    []
+  )
+  .option(
+    "--compare",
+    "measure adjacent raster change; omitted by default for mixed evidence"
+  )
+  .option(
+    "--out <path>",
+    "contact-sheet file or artifact directory",
+    "sceneproof-sheet"
+  )
+  .action(
+    async (raw: {
+      compare?: boolean;
+      item: string[];
+      out: string;
+    }): Promise<void> => {
+      const items = raw.item.map((value) => {
+        const separator = value.indexOf("=");
+        if (separator <= 0 || separator === value.length - 1) {
+          throw new Error(
+            "--item requires label=path with a non-empty label and PNG path."
+          );
+        }
+        return {
+          label: value.slice(0, separator).trim(),
+          path: resolve(value.slice(separator + 1)),
+        };
+      });
+      output(
+        await renderEvidenceSheet({
+          compare: raw.compare ?? false,
+          items,
+          out: raw.out,
+        }),
+        { command: "sheet", visual: true }
+      );
+    }
+  );
+
+sourceOptions(
+  program
+    .command("matrix")
+    .description(
+      "render 2-12 labeled state variants and compose an attributable contact sheet"
+    )
+    .argument("<entry>", "TypeScript or JavaScript source entry")
+    .argument("<node-id>", "deterministic scene node ID")
+    .requiredOption("--variants <file>", "labeled variant-state manifest")
+    .option("--scale <number>", "source pixel density", "1")
+    .option(
+      "--out <path>",
+      "contact-sheet file or artifact directory",
+      "sceneproof-matrix"
+    )
+).action(
+  async (
+    entry: string,
+    nodeId: string,
+    raw: CommonOptions & { out: string; scale: string; variants: string }
+  ) => {
+    const prepared = await prepareSource(entry, raw);
+    const manifest = await parseMatrixManifest(raw.variants);
+    const scale = PositiveScale.parse(raw.scale);
+    const css = (raw.css ?? []).map((path) => resolve(path));
+    const provenance = {
+      aliases: prepared.aliases,
+      css,
+      entry: prepared.absoluteEntry,
+      export: raw.export,
+      fixture: prepared.fixture,
+      renderer: prepared.renderer,
+      variants: { digest: manifest.digest, path: manifest.path },
+    };
+    if (prepared.renderer === "three") {
+      if (
+        manifest.variants.some((variant) => variant.sourceOverlays.length > 0)
+      ) {
+        throw new Error(
+          "Three.js matrix source overlays are not supported in the shared bundle lifecycle; route the value through fixture props."
+        );
+      }
+      output(
+        await renderThreeMatrix({
+          ...(raw.action === undefined ? {} : { action: raw.action }),
+          actionInput: prepared.actionInput,
+          aliases: prepared.aliases,
+          entry: prepared.absoluteEntry,
+          exportName: raw.export,
+          fixture: prepared.fixture,
+          framing: "source",
+          height: prepared.height,
+          margin: 0.12,
+          nodeId,
+          out: raw.out,
+          projection: "source",
+          props: prepared.props,
+          provenance,
+          scale,
+          threeBackend: prepared.threeBackend,
+          ...(prepared.timeMs === undefined ? {} : { timeMs: prepared.timeMs }),
+          variants: manifest.variants.map((variant) => ({
+            label: variant.label,
+            props: variant.props,
+          })),
+          width: prepared.width,
+          zoom: 1,
+        }),
+        { command: "matrix", visual: true }
+      );
+      return;
+    }
+    const report = await renderVariantMatrix({
+      baseProps: prepared.props,
+      out: raw.out,
+      provenance,
+      render: async (props, out, sourceOverlays) =>
+        await renderReact({
+          aliases: prepared.aliases,
+          css,
+          entry: prepared.absoluteEntry,
+          exportName: raw.export,
+          height: prepared.height,
+          nodeId,
+          out,
+          props,
+          scale,
+          sourceOverlays,
+          width: prepared.width,
+        }),
+      ...(manifest.variants.every(
+        (variant) => variant.sourceOverlays.length === 0
+      )
+        ? {
+            renderAll: async (
+              variants: Array<{
+                label: string;
+                out: string;
+                props: Record<string, unknown>;
+                sourceOverlays: SourceOverlay[];
+              }>
+            ) =>
+              await renderReactVariants({
+                aliases: prepared.aliases,
+                css,
+                entry: prepared.absoluteEntry,
+                exportName: raw.export,
+                height: prepared.height,
+                nodeId,
+                scale,
+                variants,
+                width: prepared.width,
+              }),
+          }
+        : {}),
+      variants: manifest.variants,
+    });
+    output(report, { command: "matrix", visual: true });
+  }
+);
 
 sourceOptions(
   program
@@ -839,6 +1151,7 @@ renderOptions(
     .description("rerender a selected node from its source")
     .argument("<entry>", "TypeScript or JavaScript source entry")
     .argument("<node-id>", "deterministic scene node ID")
+    .optionsGroup("Three.js target and context:")
     .option("--isolate", "hide unrelated Three.js objects")
     .option("--isolated", "alias for --isolate")
     .option(
@@ -946,6 +1259,7 @@ renderOptions(
       const common = {
         ...(raw.action === undefined ? {} : { action: raw.action }),
         actionInput: prepared.actionInput,
+        aliases: prepared.aliases,
         entry: prepared.absoluteEntry,
         exportName: raw.export,
         fixture: prepared.fixture,
@@ -989,7 +1303,10 @@ renderOptions(
             "--context-pair cannot be combined with frames, references, sweeps, compare, or silhouette."
           );
         }
-        output(await renderThreeContextPair({ ...common, out }));
+        output(await renderThreeContextPair({ ...common, out }), {
+          command: "render",
+          visual: true,
+        });
         return;
       }
       if (raw.referenceSet) {
@@ -1003,7 +1320,8 @@ renderOptions(
             ...common,
             out,
             references: await parseReferenceSet(raw.referenceSet),
-          })
+          }),
+          { command: "render", visual: true }
         );
         return;
       }
@@ -1027,7 +1345,8 @@ renderOptions(
             ...common,
             frames: raw.frames,
             out,
-          })
+          }),
+          { command: "render", visual: true }
         );
         return;
       }
@@ -1075,7 +1394,8 @@ renderOptions(
                 .enum(["balanced", "geometry", "appearance", "composition"])
                 .parse(raw.sweepObjective),
             },
-          })
+          }),
+          { command: "render", visual: true }
         );
         return;
       }
@@ -1106,7 +1426,8 @@ renderOptions(
             : {}),
           silhouette: raw.silhouette ?? false,
           stats: raw.stats ?? false,
-        })
+        }),
+        { command: "render", visual: true }
       );
       return;
     }
@@ -1134,6 +1455,7 @@ renderOptions(
     }
     output(
       await renderReact({
+        aliases: prepared.aliases,
         css: (raw.css ?? []).map((path) => resolve(path)),
         entry: prepared.absoluteEntry,
         exportName: raw.export,
@@ -1143,7 +1465,8 @@ renderOptions(
         props: prepared.props,
         scale,
         width: prepared.width,
-      })
+      }),
+      { command: "render", visual: true }
     );
   }
 );
@@ -1188,6 +1511,7 @@ renderOptions(
         await renderThreeRegion({
           ...(raw.action === undefined ? {} : { action: raw.action }),
           actionInput: prepared.actionInput,
+          aliases: prepared.aliases,
           entry: prepared.absoluteEntry,
           exportName: raw.export,
           fixture: prepared.fixture,
@@ -1203,7 +1527,8 @@ renderOptions(
           ...(raw.background === undefined
             ? {}
             : { background: raw.background }),
-        })
+        }),
+        { command: "render-region", visual: true }
       );
       return;
     }
@@ -1212,6 +1537,7 @@ renderOptions(
     }
     output(
       await renderReactRegion({
+        aliases: prepared.aliases,
         css: (raw.css ?? []).map((path) => resolve(path)),
         entry: prepared.absoluteEntry,
         exportName: raw.export,
@@ -1221,7 +1547,8 @@ renderOptions(
         region,
         scale,
         width: prepared.width,
-      })
+      }),
+      { command: "render-region", visual: true }
     );
   }
 );
@@ -1230,7 +1557,7 @@ scoutOptions(
   program
     .command("scout")
     .description(
-      "rank useful Three.js target cameras and create one visual contact sheet"
+      "render candidate Three.js target cameras as one attributable contact sheet"
     )
     .argument("<entry>", "TypeScript or JavaScript source entry")
     .argument("<node-id>", "deterministic Three.js target node ID")
@@ -1239,6 +1566,7 @@ scoutOptions(
     entry: string,
     nodeId: string,
     raw: {
+      alias?: string[];
       background?: string;
       action?: string;
       actionInput?: string;
@@ -1264,34 +1592,29 @@ scoutOptions(
     if (prepared.renderer !== "three") {
       throw new Error("Scout requires a Three.js fixture export.");
     }
-    output(
-      await scoutBriefing(
-        await scoutThree({
-          ...(raw.action === undefined ? {} : { action: raw.action }),
-          actionInput: prepared.actionInput,
-          entry: prepared.absoluteEntry,
-          exportName: raw.export,
-          fixture: prepared.fixture,
-          height: prepared.height,
-          isolate: raw.isolate,
-          nodeId,
-          out: resolve(raw.out),
-          props: prepared.props,
-          threeBackend: prepared.threeBackend,
-          ...(prepared.timeMs === undefined ? {} : { timeMs: prepared.timeMs }),
-          width: prepared.width,
-          ...(raw.background === undefined
-            ? {}
-            : { background: raw.background }),
-          ...(raw.focusNode === undefined
-            ? {}
-            : { focusNodeId: raw.focusNode }),
-          ...(raw.lookAt === undefined
-            ? {}
-            : { focus: parseVector3(raw.lookAt) }),
-        })
-      )
-    );
+    const report = await scoutThree({
+      ...(raw.action === undefined ? {} : { action: raw.action }),
+      actionInput: prepared.actionInput,
+      aliases: prepared.aliases,
+      entry: prepared.absoluteEntry,
+      exportName: raw.export,
+      fixture: prepared.fixture,
+      height: prepared.height,
+      isolate: raw.isolate,
+      nodeId,
+      out: resolve(raw.out),
+      props: prepared.props,
+      threeBackend: prepared.threeBackend,
+      ...(prepared.timeMs === undefined ? {} : { timeMs: prepared.timeMs }),
+      width: prepared.width,
+      ...(raw.background === undefined ? {} : { background: raw.background }),
+      ...(raw.focusNode === undefined ? {} : { focusNodeId: raw.focusNode }),
+      ...(raw.lookAt === undefined ? {} : { focus: parseVector3(raw.lookAt) }),
+    });
+    output(program.opts().json ? report : await scoutBriefing(report), {
+      command: "scout",
+      visual: true,
+    });
   }
 );
 

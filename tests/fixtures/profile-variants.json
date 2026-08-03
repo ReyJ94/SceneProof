@@ -1,0 +1,24 @@
+{
+  "variants": [
+    {
+      "label": "restrained",
+      "props": {
+        "profile": {
+          "amplitude": 12,
+          "entryRatio": 0.18,
+          "waves": 2
+        }
+      }
+    },
+    {
+      "label": "expressive",
+      "props": {
+        "profile": {
+          "amplitude": 44,
+          "entryRatio": 0.31,
+          "waves": 5
+        }
+      }
+    }
+  ]
+}

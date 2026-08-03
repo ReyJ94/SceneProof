@@ -1,7 +1,8 @@
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { dirname, extname, resolve } from "node:path";
-import type { Plugin } from "esbuild";
+import type { Loader, Plugin } from "esbuild";
 
 import {
   loadRuntimeDependency,
@@ -9,6 +10,7 @@ import {
 } from "./runtime-dependency.js";
 
 const SOURCE_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"];
+const SOURCE_FILE_FILTER = /\.(?:[cm]?[jt]s|tsx|jsx)$/;
 const SHARED_RUNTIME_IMPORT = /^(?:react(?:-dom)?|three)(?:\/.*)?$/;
 const WEB_ALIAS_IMPORT = /^@\//;
 const NEXT_LINK_IMPORT = /^next\/link$/;
@@ -26,6 +28,56 @@ export type BrowserBundle = {
   css: string;
   inputs: string[];
 };
+
+export type SourceOverlay = {
+  expectedDigest?: string;
+  file: string;
+  replacements: Array<{ from: string; to: string }>;
+};
+
+function loaderForSource(path: string): Loader {
+  const extension = extname(path);
+  if (extension === ".tsx") {
+    return "tsx";
+  }
+  if (extension === ".jsx") {
+    return "jsx";
+  }
+  if ([".cts", ".mts", ".ts"].includes(extension)) {
+    return "ts";
+  }
+  return "js";
+}
+
+async function applySourceOverlay(path: string, overlay: SourceOverlay) {
+  const original = await readFile(path, "utf8");
+  const digest = `sha256:${createHash("sha256").update(original).digest("hex")}`;
+  if (overlay.expectedDigest && overlay.expectedDigest !== digest) {
+    throw new Error(
+      `Source overlay digest mismatch for ${path}: expected ${overlay.expectedDigest}, received ${digest}.`
+    );
+  }
+  let contents = original;
+  for (const replacement of overlay.replacements) {
+    if (!replacement.from) {
+      throw new Error(
+        `Source overlay for ${path} contains an empty replacement source.`
+      );
+    }
+    const occurrences = contents.split(replacement.from).length - 1;
+    if (occurrences !== 1) {
+      throw new Error(
+        `Source overlay replacement for ${path} matched ${occurrences} locations; exactly one is required.`
+      );
+    }
+    contents = contents.replace(replacement.from, replacement.to);
+  }
+  return {
+    contents,
+    loader: loaderForSource(path),
+    resolveDir: dirname(path),
+  };
+}
 
 export function shouldDiscoverSourceCss(
   discoverCss: boolean | undefined
@@ -166,11 +218,27 @@ async function discoverSourceCss(inputs: readonly string[]): Promise<string[]> {
 }
 
 function sourceResolutionPlugin(
-  threeBackend: "webgl" | "webgpu" = "webgl"
+  threeBackend: "webgl" | "webgpu" = "webgl",
+  aliases: Readonly<Record<string, string>> = {},
+  sourceOverlays: readonly SourceOverlay[] = []
 ): Plugin {
+  const overlays = new Map(
+    sourceOverlays.map((overlay) => [resolve(overlay.file), overlay])
+  );
   return {
     name: "uiscene-source-resolution",
     setup(context) {
+      context.onLoad({ filter: SOURCE_FILE_FILTER }, async (args) => {
+        const overlay = overlays.get(resolve(args.path));
+        if (!overlay) {
+          return null;
+        }
+        return await applySourceOverlay(args.path, overlay);
+      });
+      context.onResolve({ filter: ANY_IMPORT }, (args) => {
+        const replacement = aliases[args.path];
+        return replacement ? { path: replacement } : null;
+      });
       context.onResolve({ filter: NEXT_LINK_IMPORT }, () => ({
         namespace: "uiscene-next-shim",
         path: "next-link",
@@ -214,9 +282,11 @@ function sourceResolutionPlugin(
 }
 
 export async function bundleBrowserDriver(input: {
+  aliases?: Readonly<Record<string, string>>;
   discoverCss?: boolean;
   entry: string;
   source: string;
+  sourceOverlays?: readonly SourceOverlay[];
   extraCss: readonly string[];
   threeBackend?: "webgl" | "webgpu";
 }): Promise<BrowserBundle> {
@@ -227,6 +297,9 @@ export async function bundleBrowserDriver(input: {
     result = await retryTransientEsbuildService(() =>
       build({
         absWorkingDir: dirname(input.entry),
+        banner: {
+          js: `globalThis.process ??= { env: { NODE_ENV: "production" } };`,
+        },
         bundle: true,
         define: {
           "process.env.NODE_ENV": '"production"',
@@ -237,7 +310,13 @@ export async function bundleBrowserDriver(input: {
         metafile: true,
         outdir: "out",
         platform: "browser",
-        plugins: [sourceResolutionPlugin(input.threeBackend)],
+        plugins: [
+          sourceResolutionPlugin(
+            input.threeBackend,
+            input.aliases ?? {},
+            input.sourceOverlays ?? []
+          ),
+        ],
         sourcemap: "inline",
         stdin: {
           contents: input.source,
@@ -280,6 +359,14 @@ export async function bundleBrowserDriver(input: {
   const inputs = Object.keys(result.metafile.inputs).map((path) =>
     resolve(dirname(input.entry), path)
   );
+  for (const overlay of input.sourceOverlays ?? []) {
+    const file = resolve(overlay.file);
+    if (!inputs.includes(file)) {
+      throw new Error(
+        `Source overlay file did not participate in the browser bundle: ${file}`
+      );
+    }
+  }
   const discoveredCss = shouldDiscoverSourceCss(input.discoverCss)
     ? await discoverSourceCss(inputs)
     : [];
@@ -313,9 +400,6 @@ async function compileSourceCss(
     }
   }
 
-  const raw = (
-    await Promise.all(absolutePaths.map((path) => readFile(path, "utf8")))
-  ).join("\n");
   const sources = [
     ...new Set(
       sourceInputs.filter((path) =>
@@ -332,11 +416,13 @@ async function compileSourceCss(
     ),
     loadRuntimeDependency<typeof import("postcss")>("postcss"),
   ]);
-  const output = await postcss([tailwindcss()]).process(
-    `${raw}\n${directives}`,
-    {
-      from: absolutePaths[0],
-    }
+  const outputs = await Promise.all(
+    absolutePaths.map(async (path) => {
+      const raw = await readFile(path, "utf8");
+      return await postcss([tailwindcss()]).process(`${raw}\n${directives}`, {
+        from: path,
+      });
+    })
   );
-  return output.css;
+  return outputs.map((output) => output.css).join("\n");
 }

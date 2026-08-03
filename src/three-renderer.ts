@@ -49,6 +49,7 @@ export type ThreeProjection = "orthographic" | "perspective" | "source";
 type ThreeOptions = {
   action?: string;
   actionInput?: Record<string, unknown>;
+  aliases: Readonly<Record<string, string>>;
   entry: string;
   exportName: string;
   width: number;
@@ -400,6 +401,7 @@ export type ThreeTargetView = {
 export type ThreeScoutOptions = {
   action?: string;
   actionInput?: Record<string, unknown>;
+  aliases: Readonly<Record<string, string>>;
   background?: string;
   entry: string;
   exportName: string;
@@ -452,7 +454,15 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
+function aliasArguments(aliases: Readonly<Record<string, string>>): string[] {
+  return Object.entries(aliases).flatMap(([specifier, path]) => [
+    "--alias",
+    shellQuote(`${specifier}=${path}`),
+  ]);
+}
+
 function detailCommand(input: {
+  aliases: Readonly<Record<string, string>>;
   candidate: ScoutCandidate;
   entry: string;
   exportName: string;
@@ -480,6 +490,7 @@ function detailCommand(input: {
     `--zoom ${compactNumber(input.candidate.zoom)}`,
     `--look-at ${focus}`,
     "--scale 1",
+    ...aliasArguments(input.aliases),
     ...(input.fixture?.props
       ? ["--props", shellQuote(input.fixture.props.path)]
       : []),
@@ -498,6 +509,7 @@ function detailCommand(input: {
 }
 
 function sourceCameraCommand(input: {
+  aliases: Readonly<Record<string, string>>;
   entry: string;
   exportName: string;
   fixture?: FixtureProvenance;
@@ -516,6 +528,7 @@ function sourceCameraCommand(input: {
     "--view original",
     "--framing source",
     "--scale 1",
+    ...aliasArguments(input.aliases),
     ...(input.fixture?.props
       ? ["--props", shellQuote(input.fixture.props.path)]
       : []),
@@ -533,6 +546,7 @@ function sourceCameraCommand(input: {
 }
 
 function sourceRegionCommand(input: {
+  aliases: Readonly<Record<string, string>>;
   entry: string;
   exportName: string;
   fixture?: FixtureProvenance;
@@ -555,6 +569,7 @@ function sourceRegionCommand(input: {
     `--height ${input.height}`,
     `--region ${region}`,
     "--scale 1",
+    ...aliasArguments(input.aliases),
     ...(input.fixture?.props
       ? ["--props", shellQuote(input.fixture.props.path)]
       : []),
@@ -637,6 +652,7 @@ export function driverSource(input: ThreeOptions): string {
 
 async function prepareThreePage(options: ThreeOptions) {
   const bundle = await bundleBrowserDriver({
+    aliases: options.aliases,
     discoverCss: false,
     entry: options.entry,
     extraCss: [],
@@ -1243,7 +1259,14 @@ export async function renderThree(
   options: Required<
     Pick<
       ThreeOptions,
-      "entry" | "exportName" | "width" | "height" | "scale" | "out" | "nodeId"
+      | "aliases"
+      | "entry"
+      | "exportName"
+      | "width"
+      | "height"
+      | "scale"
+      | "out"
+      | "nodeId"
     >
   > &
     Pick<
@@ -2465,6 +2488,12 @@ export async function renderThree(
       isolation: rendered.isolation,
       logicalSize: rendered.logicalSize,
       nodeId: options.nodeId,
+      provenance: {
+        aliases: options.aliases,
+        entry: options.entry,
+        export: options.exportName,
+        fixture: options.fixture,
+      },
       ...(nextActions.length > 0 ? { nextActions } : {}),
       quality,
       rasterizer: rasterizerInfo(rendered.rendererName),
@@ -2525,6 +2554,7 @@ export async function renderThreeFrames(
   options: Required<
     Pick<
       ThreeOptions,
+      | "aliases"
       | "entry"
       | "exportName"
       | "height"
@@ -2601,6 +2631,7 @@ export async function renderThreeFrames(
   await mkdir(directory, { recursive: true });
   await mkdir(dirname(contactSheet), { recursive: true });
   const runtime = await prepareThreePage({
+    aliases: options.aliases,
     entry: options.entry,
     exportName: options.exportName,
     height: options.height,
@@ -3277,6 +3308,12 @@ export async function renderThreeFrames(
         frames: frames.length,
         sceneInstances: 1,
       },
+      provenance: {
+        aliases: options.aliases,
+        entry: options.entry,
+        export: options.exportName,
+        fixture: options.fixture,
+      },
       quality: {
         motionDetected,
         perceptualFloor: {
@@ -3331,7 +3368,7 @@ export async function renderThreeRegion(
   options: Required<
     Pick<
       ThreeOptions,
-      "entry" | "exportName" | "width" | "height" | "scale" | "out"
+      "aliases" | "entry" | "exportName" | "width" | "height" | "scale" | "out"
     >
   > & {
     action?: string;
@@ -3522,6 +3559,12 @@ export async function renderThreeRegion(
         height: options.region.height,
         width: options.region.width,
       },
+      provenance: {
+        aliases: options.aliases,
+        entry: options.entry,
+        export: options.exportName,
+        fixture: options.fixture,
+      },
       rasterizer: rasterizerInfo(rendered.rendererName),
       region: options.region,
       renderedSize: rendered.renderedSize,
@@ -3556,6 +3599,7 @@ export async function scoutThree(
   const runtime = await prepareThreePage({
     ...(options.action === undefined ? {} : { action: options.action }),
     actionInput: options.actionInput ?? {},
+    aliases: options.aliases,
     entry: options.entry,
     exportName: options.exportName,
     ...(options.fixture === undefined ? {} : { fixture: options.fixture }),
@@ -4332,6 +4376,7 @@ export async function scoutThree(
       ? {
           candidateId: recommendedCandidate.id,
           command: detailCommand({
+            aliases: options.aliases,
             candidate: recommendedCandidate,
             entry: options.entry,
             exportName: options.exportName,
@@ -4383,6 +4428,7 @@ export async function scoutThree(
       ? {
           candidateId: originalCandidate.id,
           command: sourceCameraCommand({
+            aliases: options.aliases,
             entry: options.entry,
             exportName: options.exportName,
             ...(options.fixture === undefined
@@ -4408,6 +4454,7 @@ export async function scoutThree(
         ? {
             candidateId: originalCandidate.id,
             command: sourceRegionCommand({
+              aliases: options.aliases,
               entry: options.entry,
               exportName: options.exportName,
               ...(options.fixture === undefined
@@ -4434,6 +4481,7 @@ export async function scoutThree(
       ? {
           candidateId: shapeCandidate.id,
           command: detailCommand({
+            aliases: options.aliases,
             candidate: shapeCandidate,
             entry: options.entry,
             exportName: options.exportName,
@@ -4552,6 +4600,12 @@ export async function scoutThree(
         browserLaunches: 1,
         bundles: 1,
         sceneInstances: 1,
+      },
+      provenance: {
+        aliases: options.aliases,
+        entry: options.entry,
+        export: options.exportName,
+        fixture: options.fixture,
       },
       rasterizer: rasterizerInfo(candidatePass.rendererName),
       recommendations,

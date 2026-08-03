@@ -31,6 +31,7 @@ export async function renderThreeContextPair(options: ContextPairOptions) {
   await mkdir(directory, { recursive: true });
 
   const bundle = await bundleBrowserDriver({
+    aliases: options.aliases,
     discoverCss: false,
     entry: options.entry,
     extraCss: [],
@@ -160,6 +161,12 @@ export async function renderThreeContextPair(options: ContextPairOptions) {
         bundles: 1 as const,
         sceneInstances: 1 as const,
         views: 2 as const,
+      },
+      provenance: {
+        aliases: options.aliases,
+        entry: options.entry,
+        export: options.exportName,
+        fixture: options.fixture,
       },
       success: executionSucceeded,
       variants: { inContext, isolated },

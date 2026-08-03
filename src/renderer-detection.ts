@@ -6,6 +6,7 @@ import { bundleBrowserDriver } from "./source-bundle.js";
 export type RendererKind = "react" | "three";
 
 export type RendererProbeInput = {
+  aliases?: Record<string, string>;
   entry: string;
   exportName: string;
   height: number;
@@ -86,6 +87,7 @@ export async function probeRenderer(
   input: RendererProbeInput
 ): Promise<RendererKind> {
   const bundle = await bundleBrowserDriver({
+    ...(input.aliases ? { aliases: input.aliases } : {}),
     discoverCss: false,
     entry: input.entry,
     extraCss: [],

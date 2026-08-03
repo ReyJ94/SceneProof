@@ -1,0 +1,7 @@
+.dark .sceneproof-shell .contextual-card {
+  width: 280px;
+  padding: 16px;
+  color: rgb(230, 235, 240);
+  background-color: rgb(10, 20, 30);
+  border: 3px solid rgb(40, 50, 60);
+}

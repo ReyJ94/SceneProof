@@ -34,6 +34,33 @@ export const SceneArtifactSchema = z.object({
   entry: z.string(),
   export: z.string(),
   fixture: z.unknown().optional(),
+  mount: z
+    .object({
+      aliases: z.record(z.string(), z.string()),
+      css: z.array(z.string()).optional(),
+      document: z.object({
+        body: z
+          .object({
+            attributes: z.record(z.string(), z.string()).optional(),
+            classes: z.array(z.string()).optional(),
+          })
+          .optional(),
+        html: z
+          .object({
+            attributes: z.record(z.string(), z.string()).optional(),
+            classes: z.array(z.string()).optional(),
+          })
+          .optional(),
+        root: z
+          .object({
+            attributes: z.record(z.string(), z.string()).optional(),
+            classes: z.array(z.string()).optional(),
+          })
+          .optional(),
+      }),
+      fixture: z.boolean(),
+    })
+    .optional(),
   nodes: z.array(SceneNodeSchema),
   relationships: z.array(
     z.object({
@@ -359,6 +386,7 @@ export type RenderReport = {
   };
   scale: number;
   artifact: string;
+  provenance?: unknown;
   nextActions?: Array<{ command: string; reason: string }>;
   checks: RenderChecks;
   comparison?: {
@@ -481,6 +509,7 @@ export type RegionRenderReport = {
   };
   scale: number;
   artifact: string;
+  provenance?: unknown;
   checks: {
     moduleLoaded: boolean;
     exportFound: boolean;
@@ -556,6 +585,7 @@ export type ScoutReport = {
     bundles: 1;
     sceneInstances: 1;
   };
+  provenance?: unknown;
   recommended: {
     candidateId: string | null;
     detailCommand: string | null;
@@ -633,6 +663,7 @@ export type FrameRenderReport = {
     frames: number;
     sceneInstances: 1;
   };
+  provenance?: unknown;
   quality: {
     motionDetected: boolean;
     perceptualFloor: {
@@ -665,6 +696,7 @@ export type SweepRenderReport = {
     bundles: number;
     sceneInstances: number;
   };
+  provenance?: unknown;
   evidence: EvidenceStatus;
   graphics?: GraphicsInfo;
   execution: ExecutionStatus;

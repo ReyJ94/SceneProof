@@ -118,6 +118,7 @@ function runCli(
       encoding: "utf8",
       env: {
         ...process.env,
+        SCENEPROOF_INTERNAL_RAW_REPORT: "1",
         UISCENE_CHROME_PATH:
           process.env.UISCENE_CHROME_PATH ?? "/usr/bin/google-chrome",
         ...environment,
@@ -161,6 +162,8 @@ test("presents SceneProof through stable agent-facing commands and diagnostics",
     "inspect",
     "tree",
     "node",
+    "matrix",
+    "sheet",
     "render",
     "render-region",
     "scout",

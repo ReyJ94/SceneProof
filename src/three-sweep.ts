@@ -12,6 +12,7 @@ import type { SweepRenderReport } from "./scene-schema.js";
 import { bundleBrowserDriver } from "./source-bundle.js";
 import type { GraphicsInfo } from "./three-backend.js";
 import { renderThree } from "./three-renderer.js";
+import { mergeVariantProps } from "./variant-matrix.js";
 
 type RenderThreeOptions = Parameters<typeof renderThree>[0];
 
@@ -21,6 +22,10 @@ type SweepOptions = Omit<
   RenderThreeOptions,
   "compare" | "out" | "preparedPage" | "silhouette" | "stats"
 > & {
+  matrixVariants?: Array<{
+    label: string;
+    props: Record<string, unknown>;
+  }>;
   out: string;
   sweep: {
     objective: SweepObjective;
@@ -173,30 +178,45 @@ function sweepDriverSource(
 export async function renderThreeSweep(
   options: SweepOptions
 ): Promise<SweepRenderReport> {
-  if (options.sweep.values.length < 2 || options.sweep.values.length > 12) {
-    throw new Error("--sweep requires between 2 and 12 scalar values.");
+  const matrixMode = options.matrixVariants !== undefined;
+  const variantCount =
+    options.matrixVariants?.length ?? options.sweep.values.length;
+  if (variantCount < 2 || variantCount > 12) {
+    throw new Error(
+      `${matrixMode ? "matrix" : "--sweep"} requires between 2 and 12 variants.`
+    );
   }
   const requestedOutput = resolve(options.out);
   const contactSheetIsFile = extname(requestedOutput).toLowerCase() === ".png";
   const directory = contactSheetIsFile
     ? join(
         dirname(requestedOutput),
-        `${basename(requestedOutput, extname(requestedOutput))}-sweep`
+        `${basename(requestedOutput, extname(requestedOutput))}-${matrixMode ? "variants" : "sweep"}`
       )
     : requestedOutput;
   const contactSheet = contactSheetIsFile
     ? requestedOutput
     : join(directory, "contact-sheet.png");
-  const manifest = join(directory, "sweep.json");
+  const manifest = join(directory, matrixMode ? "manifest.json" : "sweep.json");
   await mkdir(directory, { recursive: true });
   await mkdir(dirname(contactSheet), { recursive: true });
   const variants: SweepRenderReport["variants"] = [];
   let graphics: GraphicsInfo | undefined;
   const childWarnings: string[] = [];
-  const variantProps = options.sweep.values.map((value) =>
-    propsWithOverride(options.props, options.sweep.path, value)
-  );
+  const variantInputs = options.matrixVariants
+    ? options.matrixVariants.map((variant) => ({
+        label: variant.label,
+        props: mergeVariantProps(options.props, variant.props),
+        value: mergeVariantProps(options.props, variant.props),
+      }))
+    : options.sweep.values.map((value) => ({
+        label: `${options.sweep.path}=${labelValue(value)}`,
+        props: propsWithOverride(options.props, options.sweep.path, value),
+        value,
+      }));
+  const variantProps = variantInputs.map((variant) => variant.props);
   const bundle = await bundleBrowserDriver({
+    aliases: options.aliases,
     discoverCss: false,
     entry: options.entry,
     extraCss: [],
@@ -218,8 +238,8 @@ export async function renderThreeSweep(
       },
     });
     const { out: _out, sweep: _sweep, ...baseRenderOptions } = options;
-    for (const [index, value] of options.sweep.values.entries()) {
-      const label = `${options.sweep.path}=${labelValue(value)}`;
+    for (const [index, variantInput] of variantInputs.entries()) {
+      const { label, value } = variantInput;
       const artifact = join(
         directory,
         `${String(index + 1).padStart(2, "0")}-${label
@@ -443,6 +463,12 @@ export async function renderThreeSweep(
       bundles: 1,
       sceneInstances: variants.length,
     },
+    provenance: {
+      aliases: options.aliases,
+      entry: options.entry,
+      export: options.exportName,
+      fixture: options.fixture,
+    },
     ...(best && changed
       ? {
           recommendation: {
@@ -468,4 +494,49 @@ export async function renderThreeSweep(
   };
   await writeFile(manifest, `${JSON.stringify(report, null, 2)}\n`);
   return report;
+}
+
+export async function renderThreeMatrix(
+  options: Omit<SweepOptions, "matrixVariants" | "sweep"> & {
+    provenance: Record<string, unknown>;
+    variants: Array<{ label: string; props: Record<string, unknown> }>;
+  }
+) {
+  const { provenance, variants, ...renderOptions } = options;
+  const report = await renderThreeSweep({
+    ...renderOptions,
+    matrixVariants: variants,
+    sweep: {
+      objective: "balanced",
+      path: "matrix",
+      values: variants.map((variant) => variant.label),
+    },
+  });
+  const matrixReport = {
+    artifacts: report.artifacts,
+    command: "matrix",
+    comparisons: report.comparisons,
+    execution: report.execution,
+    ...(report.graphics ? { graphics: report.graphics } : {}),
+    lifecycle: {
+      bundles: 1,
+      renderBrowserLaunches: 1,
+      variants: report.variants.length,
+    },
+    provenance,
+    variants: report.variants.map((variant) => ({
+      artifact: variant.artifact,
+      index: variant.index,
+      label: variant.label,
+      props: variant.value as Record<string, unknown>,
+    })),
+    warnings: report.warnings.map((warning) =>
+      warning.replaceAll("sweep", "matrix").replaceAll("Sweep", "Matrix")
+    ),
+  };
+  await writeFile(
+    report.artifacts.manifest,
+    `${JSON.stringify(matrixReport, null, 2)}\n`
+  );
+  return matrixReport;
 }

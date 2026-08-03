@@ -166,6 +166,7 @@ export async function renderThreeReferenceSet(
   const warnings: string[] = [];
   const { out: _out, references: _references, ...base } = options;
   const bundle = await bundleBrowserDriver({
+    aliases: options.aliases,
     discoverCss: false,
     entry: options.entry,
     extraCss: [],
@@ -350,6 +351,12 @@ export async function renderThreeReferenceSet(
       browserLaunches: 1,
       bundles: 1,
       sceneInstances: views.length,
+    },
+    provenance: {
+      aliases: options.aliases,
+      entry: options.entry,
+      export: options.exportName,
+      fixture: options.fixture,
     },
     success: executionSucceeded,
     views,

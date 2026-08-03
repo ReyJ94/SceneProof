@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.7.0] - 2026-08-03
+
+### Added
+
+- `defineReactFixture` through `sceneproof/react` for fixture-owned wrappers,
+  providers, and document classes or attributes without changing production
+  component APIs.
+- Explicit repeatable module aliases across React and Three.js source bundles,
+  per-file CSS import resolution, and complete mounting provenance.
+- Renderer-neutral `matrix` contact sheets for labeled multi-parameter state
+  variants, plus checksum-guarded exact React source overlays that never write
+  to the worktree.
+- A renderer-neutral `sheet` command for packaging 2–12 labeled PNG artifacts,
+  with dimensions, byte sizes, SHA-256 fingerprints, and opt-in adjacent raster
+  comparison.
+- Compact factual agent briefings with full diagnostics behind `--json`.
+
+### Changed
+
+- Public reports now expose execution, artifacts, provenance, facts, warnings,
+  explicit mechanical assertions, and one agent-owned review reminder instead
+  of global judgeability or aesthetic verdicts.
+- Scout retains measured camera diagnoses and copy-ready acquisition commands
+  as optional suggestions without choosing a visual answer.
+- `props` prints its derived JSON to stdout when `--out` is omitted.
+- Explicit CSS files are repeatable in cascade order and resolve imports from
+  their own directories.
+
+### Deprecated
+
+- The scalar `--sweep` and automatic `--sweep-objective` ranking flags remain
+  executable for compatibility but are hidden from agent help; use `matrix`.
+
 ## [0.6.0] - 2026-07-28
 
 ### Added
@@ -186,6 +219,7 @@ of an uninformative image.
 Initial public release with source-grounded React and Three.js inspection,
 structural evidence, focused rerendering, and Scout camera discovery.
 
+[0.7.0]: https://github.com/ReyJ94/SceneProof/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/ReyJ94/SceneProof/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/ReyJ94/SceneProof/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/ReyJ94/SceneProof/compare/v0.3.0...v0.4.0

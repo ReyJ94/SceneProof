@@ -1,7 +1,7 @@
 {
   "name": "sceneproof",
-  "version": "0.6.0",
-  "description": "Source-grounded visual perception for coding agents—inspect, focus, and verify UI and 3D work at full quality.",
+  "version": "0.7.0",
+  "description": "Source-grounded visual evidence harness for coding agents—inspect, render, and compare real React and Three.js surfaces.",
   "private": false,
   "license": "MIT",
   "type": "module",
@@ -10,6 +10,7 @@
     "uiscene": "./src/cli.ts"
   },
   "exports": {
+    "./react": "./src/react-fixture.ts",
     "./three": "./src/three-fixture.ts"
   },
   "files": [
@@ -38,7 +39,9 @@
     "webgpu",
     "react",
     "source-rendering",
-    "agent-tools"
+    "agent-tools",
+    "visual-evidence",
+    "testing-harness"
   ],
   "scripts": {
     "build": "bun build --compile --allow-unresolved '' --outfile dist/sceneproof src/cli.ts",
@@ -49,7 +52,7 @@
     "lint": "ultracite check .",
     "lint:fix": "ultracite fix .",
     "prepack": "bun run check",
-    "test": "bun test --timeout 30000 tests/cli.test.ts tests/react-renderer.test.ts tests/source-bundle.test.ts",
+    "test": "bun test --timeout 30000 tests/agent-surface.test.ts tests/cli.test.ts tests/react-renderer.test.ts tests/source-bundle.test.ts",
     "test:cli": "bun test --timeout 30000 tests/cli.test.ts",
     "test:compiled": "bun tests/compiled-cli-smoke.ts",
     "typecheck": "tsc --noEmit"

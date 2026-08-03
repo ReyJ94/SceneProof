@@ -1,0 +1,5 @@
+@import "./tokens.css";
+
+.external-css-card {
+  color: var(--first-color);
+}

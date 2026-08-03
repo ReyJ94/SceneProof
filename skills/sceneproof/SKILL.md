@@ -12,20 +12,22 @@ evidence**. If you are about to assert anything about appearance, you either
 have an artifact you actually looked at, or you say plainly that the visual
 result is unverified.
 
-The CLI (`sceneproof --help`, per-command help, and the `recommendations`
-field in every report) tells you what commands exist and what to run next.
+The CLI (`sceneproof --help`, per-command help, and mechanically grounded
+`suggestions` when available) tells you what commands exist and what evidence
+it can gather next.
 This skill is about something the CLI cannot do for you: choosing what
 uncertainty to resolve, in what order, and judging the result honestly.
 
-## First: name the question
+## First: name the purpose
 
-Before running anything, state the visual claim as a falsifiable question.
-"Check the UI" is not a question. "Is the price label legible at the size it
-ships at?", "Is the selected item visibly distinct from unselected
-ones?", "Does the geometry silhouette match the reference front view?" — these
-are questions, and each one implies different evidence. Every command you run
-should exist to answer the named question. If you can't say which question a
-render answers, don't run it.
+Before claim-directed work, state the visual claim as a falsifiable question.
+"Is the price label legible at the size it ships at?", "Is the selected
+item visibly distinct from unselected ones?", and "Does the geometry
+silhouette match the reference front view?" imply different evidence.
+Exploration is also legitimate: when you do not yet know the right question,
+name the uncertainty you are exploring rather than pretending the command is a
+verification. In either mode, know why you are gathering the evidence and do
+not let an exploratory artifact silently become proof of a stronger claim.
 
 ## Resolve uncertainty in order, cheapest decisive evidence first
 
@@ -94,23 +96,38 @@ is the last limit.
   sample frames of that same scene). Two separately hand-posed renders do
   not establish that a transition happens.
 
-## Read the verdict for what it is
+## Read the report for what it can establish
 
-Every report separates three things. Keep them separate in your reasoning:
+SceneProof has no model inside it. It does not know whether a composition is
+good or whether one heuristic makes the artifact adequate for your question.
+Keep these report layers separate:
 
 - **execution** succeeded = the command ran. Nothing more.
-- **evidence** `judgeable` = the artifact can support the named question.
-  `unjudgeable` or `partially-judgeable` means the evidence is defective —
-  fix the framing, mask, state, or dynamic range and re-gather. Do not
-  soften it into "roughly confirms".
-- **assessment** with `decisionOwner: agent` means the judgment is yours and
-  it hasn't been made yet. Open the artifact. Actually look at it —
-  hierarchy, spacing, clipping, contrast for UI; silhouette, scale, lighting
-  response, occlusion, depth for 3D — in context, not just in isolation.
+- **artifacts** are the files you must actually open.
+- **provenance** says what source, state, context, CSS, substitutions, and
+  overlays produced those files. A declared stub or synthesized prop is a real
+  boundary on what you can conclude.
+- **facts** and **warnings** are measurements and concrete limitations, not a
+  visual verdict. A luminance spread, target coverage, or Scout score may help
+  diagnose a frame without deciding whether the frame answers your question.
+- **assertions** pass or fail only a mechanical condition explicitly requested
+  in the command. Passing one does not approve the design around it.
+- **review.required** means the contextual decision remains yours. Open the
+  artifact. Actually look at it before making a visual claim.
 
 For reference comparisons, confirm the mask/overlay sits on the intended
-subject before trusting any metric derived from it. A precise number about
-the wrong region is worse than no number.
+subject before trusting any metric derived from it. For matrices, compare the
+labeled images rather than accepting raster delta as a preference. A precise
+number about the wrong region—or a ranking with the wrong objective—is worse
+than no number.
+
+When the evidence spans different commands or scales, `sheet` can put the
+labeled PNGs into one artifact. Use it for combinations such as context plus
+detail, before plus after, or render plus reference. It packages what you give
+it; it does not make an old image fresh or recover the source and state
+provenance from the command that produced it. Keep those originating reports,
+and request `--compare` only for adjacent frames whose raster difference is
+meaningful.
 
 ## Report like a witness, not an advocate
 
