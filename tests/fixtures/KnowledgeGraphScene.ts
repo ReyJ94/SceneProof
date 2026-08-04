@@ -24,11 +24,11 @@ export function createScene(context: SceneContext) {
   scene.userData.sceneproofId = "object-gallery";
   scene.background = new Color("#080a12");
 
-  const concepts = new Group();
-  concepts.name = "Concepts";
-  concepts.userData.sceneproofId = "collection";
+  const collection = new Group();
+  collection.name = "Collection";
+  collection.userData.sceneproofId = "collection";
 
-  const earth = new Mesh(
+  const featured = new Mesh(
     new SphereGeometry(1.2, 64, 48),
     new MeshStandardMaterial({
       color: "#74c7ec",
@@ -36,11 +36,11 @@ export function createScene(context: SceneContext) {
       roughness: 0.38,
     })
   );
-  earth.name = "Earth";
-  earth.userData.sceneproofId = "featured-model";
-  earth.position.set(-2.4, 0.2, 0);
+  featured.name = "Featured model";
+  featured.userData.sceneproofId = "featured-model";
+  featured.position.set(-2.4, 0.2, 0);
 
-  const reason = new Mesh(
+  const secondary = new Mesh(
     new TorusGeometry(1, 0.28, 32, 96),
     new MeshStandardMaterial({
       color: "#b08d57",
@@ -48,12 +48,12 @@ export function createScene(context: SceneContext) {
       roughness: 0.3,
     })
   );
-  reason.name = "Reason";
-  reason.userData.sceneproofId = "concept-reason";
-  reason.position.set(0.4, 0.15, 0);
-  reason.rotation.x = Math.PI / 3;
+  secondary.name = "Secondary model";
+  secondary.userData.sceneproofId = "secondary-model";
+  secondary.position.set(0.4, 0.15, 0);
+  secondary.rotation.x = Math.PI / 3;
 
-  const evidence = new Mesh(
+  const reference = new Mesh(
     new BoxGeometry(1.7, 1.7, 1.7, 4, 4, 4),
     new MeshStandardMaterial({
       color: "#cdd6f4",
@@ -61,14 +61,14 @@ export function createScene(context: SceneContext) {
       roughness: 0.52,
     })
   );
-  evidence.name = "Evidence";
-  evidence.userData.sceneproofId = "concept-evidence";
-  evidence.position.set(3, -0.1, 0);
-  evidence.rotation.set(0.35, 0.55, 0.1);
+  reference.name = "Reference model";
+  reference.userData.sceneproofId = "reference-model";
+  reference.position.set(3, -0.1, 0);
+  reference.rotation.set(0.35, 0.55, 0.1);
 
-  concepts.add(earth, reason, evidence);
+  collection.add(featured, secondary, reference);
   scene.add(
-    concepts,
+    collection,
     new AmbientLight("#756c9b", 1.3),
     new DirectionalLight("#f2eadf", 2.1)
   );
@@ -81,7 +81,7 @@ export function createScene(context: SceneContext) {
     0.1,
     100
   );
-  camera.name = "Knowledge camera";
+  camera.name = "Gallery camera";
   camera.position.set(0, 3.2, 10);
   camera.lookAt(0, 0, 0);
   camera.updateMatrixWorld(true);
@@ -89,7 +89,7 @@ export function createScene(context: SceneContext) {
   return {
     camera,
     dispose: () => {
-      concepts.traverse((object) => {
+      collection.traverse((object) => {
         if (!(object instanceof Mesh)) {
           return;
         }

@@ -21,9 +21,9 @@ uncertainty to resolve, in what order, and judging the result honestly.
 ## First: name the purpose
 
 Before claim-directed work, state the visual claim as a falsifiable question.
-"Is the price label legible at the size it ships at?", "Is the selected
-item visibly distinct from unselected ones?", and "Does the geometry
-silhouette match the reference front view?" imply different evidence.
+"Is the price label legible at the size it ships at?", "Is the selected card
+visibly distinct from the others?", and "Does the model silhouette match the
+reference front view?" imply different evidence.
 Exploration is also legitimate: when you do not yet know the right question,
 name the uncertainty you are exploring rather than pretending the command is a
 verification. In either mode, know why you are gathering the evidence and do
@@ -41,8 +41,8 @@ at the layer that is actually unknown:
    being claimed? A default-props render cannot verify a claim about the
    selected/error/dense state.
 3. **Structure** — does the target exist, with sane bounds, visibility,
-   geometry, material, lights? Ask `tree` and `node` before rendering
-   anything.
+   geometry, material, lights? Use `tree` or `node` first when the boundary,
+   target, bounds, or visibility is uncertain.
 4. **Framing** — does the camera/viewport actually present the target at an
    informative size and angle?
 5. **Raster** — only once framing is right: are more freshly rendered pixels
@@ -74,21 +74,28 @@ For 3D, an uninformative angle at high resolution is worth less than a good
 angle at low resolution. When you don't know the useful camera, run `scout`
 instead of guessing — but treat its output as a set of *hypotheses with
 measurements*, not a verdict. Read the contact sheet yourself. The
-score/coverage/visible numbers tell you *why* a view fails (target out of
-frame vs. present but tiny vs. occluded), which is diagnosis you should
-reason from. Prefer a tighter region, closer framing, or a more revealing
-angle before reaching for `--scale`; increase scale only when the relevant
-detail already occupies an informative part of the frame and raster density
-is the last limit.
+score, coverage, and visible-signal numbers help distinguish framing, scale,
+contrast, and sparse-signal problems. They do not establish occlusion or visual
+adequacy on their own. Prefer a tighter region, closer framing, or a more
+revealing angle before reaching for `--scale`; increase scale only when the
+relevant detail already occupies an informative part of the frame and raster
+density is the last limit.
 
 ## Freshness and provenance are non-negotiable
 
-- Never crop or enlarge an existing PNG to "look closer" — rerender the
-  region from source. A crop cannot contain detail that was never rendered.
+- Do not treat a crop or enlargement as fresh evidence. Rerender the region
+  from source when the claim needs detail the original render did not contain.
 - Never build a simplified copy of production geometry, layout, or state to
   make verification easier. That verifies your copy, not the application. If
-  the real boundary can't load, report that as the blocker instead of
-  approximating around it.
+  the real boundary needs application context, reconstruct that context in the
+  harness: let a React fixture own wrappers, providers, and document state; load
+  the real styles in cascade order; alias browser-incompatible integrations
+  explicitly. Do not change production APIs or imports to make inspection
+  easier. If the real boundary still cannot load without fabricating the
+  behavior under test, report that as the blocker.
+- Use `matrix` for labeled multidimensional states. A checksum-guarded source
+  overlay is an attributable last resort for a sealed React constant, not a
+  license to rewrite production files or hide state from provenance.
 - Know what state you actually rendered. Synthesized placeholder props are
   labeled in the report — do not let them silently stand in for real state
   in your conclusion.
@@ -115,11 +122,14 @@ Keep these report layers separate:
 - **review.required** means the contextual decision remains yours. Open the
   artifact. Actually look at it before making a visual claim.
 
+Start with the compact briefing. Use `--json` when the decision depends on the
+complete factual report; a fact omitted from the briefing is not necessarily a
+fact SceneProof failed to collect.
+
 For reference comparisons, confirm the mask/overlay sits on the intended
 subject before trusting any metric derived from it. For matrices, compare the
 labeled images rather than accepting raster delta as a preference. A precise
-number about the wrong region—or a ranking with the wrong objective—is worse
-than no number.
+number about the wrong subject, state, or region is worse than no number.
 
 When the evidence spans different commands or scales, `sheet` can put the
 labeled PNGs into one artifact. Use it for combinations such as context plus

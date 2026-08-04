@@ -129,7 +129,7 @@ Don't have props for a typed production component yet? Let SceneProof sketch
 the JSON instead of reverse-engineering the type by hand:
 
 ```bash
-sceneproof props src/PricingPanel.tsx --export PricingPanel --out fixtures/pricing-panel.json
+sceneproof props src/components/PricingPanel.tsx --export PricingPanel --out fixtures/pricing-panel.json
 ```
 
 `--partial-props` fills the missing paths with clearly labeled placeholders.
@@ -148,11 +148,9 @@ import { AppShell } from "@/components/app-shell";
 export const accountPanelFixture = defineReactFixture({
   document: { html: { classes: ["dark"] } },
   render: (props) => (
-    <AppShell
-      canvas={<PreviewFixture />}
-      composer={<ContentFixture />}
-      sidebar={<AccountPanel {...props} />}
-    />
+    <AppShell>
+      <AccountPanel {...props} />
+    </AppShell>
   ),
 });
 ```
@@ -190,14 +188,14 @@ writes it back to the worktree. Three.js matrices currently vary fixture props
 only. The older scalar `--sweep` flags still work for compatibility, but they
 stay out of the main help surface.
 
-Sometimes the useful evidence doesn't belong to one matrix: the whole sidebar,
-a fresh 4× boundary render, the earlier version, and a supplied reference. Put
+Sometimes the useful evidence doesn't belong to one matrix: the whole panel,
+a fresh 4× detail render, the earlier version, and a supplied reference. Put
 those artifacts into one labeled sheet instead of opening them from memory:
 
 ```bash
 sceneproof sheet \
   --item context=artifacts/account-panel.png \
-  --item boundary@4x=artifacts/account-panel-detail.png \
+  --item detail@4x=artifacts/account-panel-detail.png \
   --item before=artifacts/account-panel-before.png \
   --item reference=references/account-panel.png \
   --out artifacts/account-panel-review
@@ -218,8 +216,8 @@ its `{ scene, camera }` return value, or you can mark it explicitly with
 camera isn't obvious, let Scout lay out the useful candidates:
 
 ```bash
-sceneproof node scene.ts three:featured-item --export createGalleryEvidence --props fixtures/selected.json
-sceneproof scout scene.ts three:featured-item --export createGalleryEvidence --props fixtures/selected.json --out artifacts/gallery-scout
+sceneproof node scene.ts three:featured-model --export createGalleryScene --props fixtures/featured.json
+sceneproof scout scene.ts three:featured-model --export createGalleryScene --props fixtures/featured.json --out artifacts/gallery-scout
 ```
 
 Scout returns four useful views: `context` keeps the source composition,
@@ -233,8 +231,8 @@ frame; `fill` moves in and allows controlled clipping. Actions and timeline
 frames stay inside one real scene lifecycle:
 
 ```bash
-sceneproof render scene.ts three:featured-item --export createGalleryEvidence --props fixtures/selected.json \
-  --action select --frames before,0,80,160,settled --framing source --out artifacts/select-transition.png
+sceneproof render scene.ts three:featured-model --export createGalleryScene --props fixtures/featured.json \
+  --action highlight --frames before,0,80,160,settled --framing source --out artifacts/highlight-transition.png
 ```
 
 `--context-pair` captures the target alone and in its surrounding scene without
@@ -268,8 +266,8 @@ Its report sticks to what the harness can actually establish:
 ```json
 {
   "execution": { "status": "succeeded", "meaning": "command-execution-only" },
-  "artifacts": { "primary": { "kind": "render", "path": "/tmp/account-panel.png" } },
-  "facts": { "target": { "id": "dom:account-panel" } },
+  "artifacts": { "primary": { "kind": "render", "path": "/tmp/card.png" } },
+  "facts": { "target": { "id": "dom:card" } },
   "review": {
     "required": true,
     "decisionOwner": "agent",

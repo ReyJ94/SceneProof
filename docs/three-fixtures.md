@@ -15,8 +15,8 @@ and camera. When extra setup is needed, treat the adapter as repository tooling:
     sceneproof/
       gallery.scene.ts
       fixtures/
-        selected.json
-        select-action.json
+        featured.json
+        highlight-action.json
 ```
 
 A reusable inspector belongs under the repository-root
@@ -32,7 +32,7 @@ The inspector may:
 - translate a named fixture action into the real domain action;
 - clean up resources that it created.
 
-It must not copy or approximate production geometry, geometry, camera values,
+It must not copy or approximate production geometry, camera values,
 layout, or state merely to make inspection run. Such a reconstruction tests the
 inspector, not the application.
 

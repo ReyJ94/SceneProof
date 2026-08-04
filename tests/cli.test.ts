@@ -212,7 +212,7 @@ test("loads a reusable inspector from repository-root scripts without an app ada
   const fixtureDirectory = join(inspectorDirectory, "fixtures");
   const productionEntry = join(sourceDirectory, "production-scene.ts");
   const inspectorEntry = join(inspectorDirectory, "gallery.scene.ts");
-  const fixture = join(fixtureDirectory, "selected.json");
+  const fixture = join(fixtureDirectory, "featured.json");
 
   try {
     mkdirSync(sourceDirectory, { recursive: true });

@@ -113,7 +113,7 @@ export function createConfiguredScene(context: AdvancedSceneContext) {
         bounds: () => new Box3().setFromObject(focus),
         focus: () => focus.position.clone(),
         id: "semantic-focus",
-        label: "Featured item",
+        label: "Semantic focus object",
         members: [{ object: focus }],
       },
     ],
