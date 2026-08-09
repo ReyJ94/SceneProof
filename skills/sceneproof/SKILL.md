@@ -15,6 +15,10 @@ result is unverified.
 The CLI (`sceneproof --help`, per-command help, and mechanically grounded
 `suggestions` when available) tells you what commands exist and what evidence
 it can gather next.
+Before a serious review, run `sceneproof --version` and `sceneproof doctor`.
+Do not spend a debugging session against a stale installed binary; inspect the
+doctor installation block and use its reinstall command when installed-bin
+readiness fails.
 This skill is about something the CLI cannot do for you: choosing what
 uncertainty to resolve, in what order, and judging the result honestly.
 
@@ -102,6 +106,14 @@ density is the last limit.
 - Transition claims need one real lifecycle (construct once, act once,
   sample frames of that same scene). Two separately hand-posed renders do
   not establish that a transition happens.
+- Treat `--frames before,0,120,settled` as checkpoints: it says nothing about
+  the unsampled interval. Use `--frames 0..3000@100ms` when the claim concerns
+  continuous motion, then inspect `motion.apng` and `motion-map.png` as well as
+  representative frames.
+- Route diagnostic shader channels through explicit fixture props so the
+  evidence is reproducible. Altered lights, exposure, tone mapping, or debug
+  materials can isolate a cause, but they are diagnostic evidence—not the
+  canonical shipping appearance. Return to the real pipeline before approval.
 
 ## Read the report for what it can establish
 

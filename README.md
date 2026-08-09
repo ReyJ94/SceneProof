@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ReyJ94/SceneProof/releases/tag/v0.7.0"><img alt="Release v0.7.0" src="https://img.shields.io/badge/release-v0.7.0-E6A34D?style=flat-square" /></a>
+  <a href="https://github.com/ReyJ94/SceneProof/releases/tag/v0.8.0"><img alt="Release v0.8.0" src="https://img.shields.io/badge/release-v0.8.0-E6A34D?style=flat-square" /></a>
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-6B8E9E?style=flat-square" /></a>
 </p>
 
@@ -67,17 +67,21 @@ helps with Three.js cameras, and the [React](#react-quick-path) and
   WebGL or WebGPU path and adapter it actually used. WebGPU fails loudly rather
   than quietly falling back.
 
-## What's new in v0.7.0
+## What's new in v0.8.0
 
-This release makes React inspection feel like part of the app instead of a
-special case. Fixtures can bring their own wrappers, providers, document
-context, CSS, and explicit module aliases without changing production APIs.
-Matrices compare several labeled states at once; `sheet` collects evidence from
-different commands into one artifact. Reports now stick to provenance, facts,
-warnings, and explicit checks. The agent still makes the visual call.
+This release closes the visual review loop for animated and post-processed
+Three.js work. Continuous timelines emit saved frames, lossless APNG, a compact
+contact sheet, and a motion map; temporal matrices compare both time and state.
+Fixtures can own a custom draw pipeline such as `EffectComposer` without being
+double-rendered. Delivery review pairs the literal shipping view with fresh
+detail, default artifact paths no longer overwrite evidence, and `doctor`
+detects stale installed binaries.
 
 <details>
 <summary>Earlier releases</summary>
+
+**v0.7.0** — Added fixture-owned React context, explicit aliases and CSS,
+neutral state matrices, mixed-evidence sheets, and compact factual briefings.
 
 **v0.6.0** — Added explicit perspective and orthographic evidence cameras,
 auditable seed-assisted masks, localized silhouette differences, and one sheet
@@ -233,7 +237,26 @@ frames stay inside one real scene lifecycle:
 ```bash
 sceneproof render scene.ts three:featured-model --export createGalleryScene --props fixtures/featured.json \
   --action highlight --frames before,0,80,160,settled --framing source --out artifacts/highlight-transition.png
+
+sceneproof render scene.ts three:featured-model --export createGalleryScene --props fixtures/featured.json \
+  --action highlight --frames 0..3000@100ms --framing source --out artifacts/highlight-motion
 ```
+
+Comma-separated frames are sparse checkpoints. A numeric range is continuous
+motion evidence: it writes raw PNGs under `frames/`, `motion.apng`, a maximum
+12-frame contact sheet, `motion-map.png`, and `frames.json`. Use
+`render-region --frames` for the same lifecycle over a logical viewport patch.
+
+For shipping-scale claims, keep the delivery camera honest while still getting
+inspectable detail:
+
+```bash
+sceneproof render scene.ts three:featured-model --export createGalleryScene \
+  --delivery-review 24 --out artifacts/featured-delivery
+```
+
+When `--out` is omitted, visual commands allocate a unique path under
+`artifacts/sceneproof/`; they never reuse a hidden `latest` target.
 
 `--context-pair` captures the target alone and in its surrounding scene without
 rebuilding the fixture. That makes it harder to approve a form against an empty

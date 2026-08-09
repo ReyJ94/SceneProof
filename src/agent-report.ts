@@ -21,8 +21,10 @@ const RECORD_FACT_KEYS = [
   "graphics",
   "isolation",
   "logicalSize",
+  "pipeline",
   "rasterizer",
   "renderedSize",
+  "timeline",
   "timingsMs",
 ] as const;
 const VALUE_FACT_KEYS = [

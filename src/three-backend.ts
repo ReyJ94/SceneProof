@@ -22,13 +22,26 @@ export type BrowserRendererHandle = {
   captureCanvas: () => Promise<HTMLCanvasElement>;
   graphics: GraphicsInfo;
   ownsRenderer: boolean;
-  renderScene: (
+  pipeline: (
+    draw?: import("./three-fixture.js").ThreeFixtureResult["draw"]
+  ) => ThreePipelineInfo;
+  renderFrame: (
     scene: import("three").Scene,
-    camera: import("three").Camera
+    camera: import("three").Camera,
+    viewport: import("./three-fixture.js").ThreeFixtureDrawContext["viewport"],
+    draw?: import("./three-fixture.js").ThreeFixtureResult["draw"]
   ) => Promise<void>;
   renderer:
     | import("three").WebGLRenderer
     | import("three/webgpu").WebGPURenderer;
+};
+
+export type ThreePipelineInfo = {
+  drawOwner: "fixture" | "sceneproof";
+  outputColorSpace: string;
+  rendererOwner: "fixture" | "sceneproof";
+  toneMapping: string;
+  toneMappingExposure: number;
 };
 
 /**
@@ -321,8 +334,23 @@ export async function ensureThreeRenderer(
         },
         graphics,
         ownsRenderer,
+        pipeline: (draw) => ({
+          drawOwner: draw ? "fixture" : "sceneproof",
+          outputColorSpace: String(renderer.outputColorSpace),
+          rendererOwner: ownsRenderer ? "sceneproof" : "fixture",
+          toneMapping:
+            Object.entries(THREE).find(
+              ([key, value]) =>
+                key.endsWith("ToneMapping") && value === renderer.toneMapping
+            )?.[0] ?? String(renderer.toneMapping),
+          toneMappingExposure: renderer.toneMappingExposure,
+        }),
         renderer,
-        renderScene: async (scene, camera) => {
+        renderFrame: async (scene, camera, viewport, draw) => {
+          if (draw) {
+            await draw({ camera, renderer, scene, viewport });
+            return;
+          }
           if (graphics.actual === "webgpu") {
             await (
               renderer as import("three/webgpu").WebGPURenderer

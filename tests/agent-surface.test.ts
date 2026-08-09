@@ -532,6 +532,64 @@ test("Three matrices share one lifecycle, merge base props, and persist the neut
   }
 }, 15_000);
 
+test("Three matrices compare time within variants and variants at the same time", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-time-matrix-"));
+  const variants = join(directory, "variants.json");
+  writeFileSync(
+    variants,
+    JSON.stringify({
+      variants: [
+        { label: "left", props: { offset: -3 } },
+        { label: "right", props: { offset: 3 } },
+      ],
+    })
+  );
+  try {
+    const result = runAgentCli([
+      "matrix",
+      advancedThreeEntry,
+      "three:semantic-focus",
+      "--export",
+      "createConfiguredScene",
+      "--renderer",
+      "three",
+      "--variants",
+      variants,
+      "--frames",
+      "0..200@100ms",
+      "--width",
+      "160",
+      "--height",
+      "120",
+      "--out",
+      join(directory, "artifacts"),
+    ]);
+
+    assert.equal(result.status, 0, result.stderr);
+    const persisted = JSON.parse(
+      readFileSync(join(directory, "artifacts", "manifest.json"), "utf8")
+    );
+    assert.deepEqual(persisted.timeline, {
+      kind: "continuous",
+      stepMs: 100,
+    });
+    assert.deepEqual(persisted.lifecycle, {
+      bundles: 1,
+      frames: 6,
+      renderBrowserLaunches: 1,
+      variants: 2,
+    });
+    assert.equal(persisted.variants[0].frames.length, 3);
+    assert.equal(existsSync(persisted.variants[0].animatedPng), true);
+    assert.equal(persisted.comparisons.motion.length, 2);
+    assert.equal(persisted.comparisons.variants.length, 3);
+    assert.equal("recommendation" in persisted, false);
+    assert.equal("winner" in persisted, false);
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+}, 30_000);
+
 test("props prints the derived fixture to stdout when no output file is requested", () => {
   const result = runAgentCli([
     "props",

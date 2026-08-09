@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
 const packageVersion = (
@@ -41,6 +41,10 @@ const webgpuIncompatibleEntry = resolve(
 const webgpuAddonIncompatibleEntry = resolve(
   root,
   "tests/fixtures/WebGpuAddonIncompatibleScene.ts"
+);
+const effectComposerEntry = resolve(
+  root,
+  "tests/fixtures/EffectComposerScene.ts"
 );
 const ambiguousReferenceEntry = resolve(
   root,
@@ -97,8 +101,17 @@ const GLSL_TO_TSL_GUIDANCE = /GLSL.*TSL|TSL.*GLSL/i;
 const WEBGL_ONLY_EXPORTS = /WebGL-only Three\.js exports/i;
 const WEBGPU_TSL_EQUIVALENT = /WebGPU\/TSL equivalent/i;
 const EXPLICIT_WEBGL_BACKEND = /--three-backend webgl/i;
-const VISUAL_QUALITY_VERDICT = /visual-quality verdict/i;
 const CYAN_MASK_REVIEW = /cyan mask/i;
+const FIXTURE_DRAW_FAILURE = /fixture draw failed deliberately/i;
+const FRAMES_TIME_CONFLICT = /--frames and --time are mutually exclusive/i;
+const DELIVERY_REVIEW_SOURCE_CAMERA =
+  /delivery-review requires literal source framing/i;
+const DEFAULT_ARTIFACT_ROOT = /artifacts\/sceneproof\//;
+const DELIVERY_REVIEW_ONE = /--delivery-review 1/;
+const DENSE_CHECKPOINT_RANGE = /--frames 0\.\.125@5ms/;
+const FIT_FRAMING_FLAG = /--framing fit/;
+const ACTION_INPUT_FLAG = /--action-input/;
+const TIME_ZERO_FLAG = /--time 0/;
 
 type CliResult = {
   readonly status: number | null;
@@ -179,6 +192,105 @@ test("reports the package version through the CLI", () => {
 
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout.trim(), packageVersion);
+});
+
+test("allocates a fresh default artifact path without overwriting prior evidence", () => {
+  const args = [
+    "render",
+    litIsolateEntry,
+    "subject",
+    "--export",
+    "createScene",
+    "--renderer",
+    "three",
+    "--width",
+    "120",
+    "--height",
+    "90",
+  ];
+  const created: string[] = [];
+  try {
+    const first = runCli(args);
+    assert.equal(first.status, 0, first.stderr);
+    const firstArtifact = JSON.parse(first.stdout).artifact as string;
+    created.push(dirname(firstArtifact));
+    const firstBytes = readFileSync(firstArtifact);
+
+    const second = runCli(args);
+    assert.equal(second.status, 0, second.stderr);
+    const secondArtifact = JSON.parse(second.stdout).artifact as string;
+    created.push(dirname(secondArtifact));
+
+    assert.notEqual(firstArtifact, secondArtifact);
+    assert.match(firstArtifact, DEFAULT_ARTIFACT_ROOT);
+    assert.deepEqual(readFileSync(firstArtifact), firstBytes);
+    assert.ok(statSync(secondArtifact).size > 0);
+  } finally {
+    for (const directory of created) {
+      rmSync(directory, { force: true, recursive: true });
+    }
+  }
+});
+
+test("lets an EffectComposer fixture own exactly one draw pipeline", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-draw-owner-"));
+  const artifact = join(directory, "composer.png");
+  try {
+    const result = runCli([
+      "render",
+      effectComposerEntry,
+      "three:composer-subject",
+      "--export",
+      "createEffectComposerScene",
+      "--renderer",
+      "three",
+      "--width",
+      "160",
+      "--height",
+      "120",
+      "--stats",
+      "--out",
+      artifact,
+    ]);
+
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.pipeline.drawOwner, "fixture");
+    assert.equal(report.pipeline.rendererOwner, "fixture");
+    assert.equal(report.pipeline.outputColorSpace, "srgb");
+    assert.equal(report.stats.source.path, artifact);
+    assert.match(report.stats.source.digest, SHA_256_DIGEST);
+    assert.ok(statSync(artifact).size > 0);
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("does not hide a fixture draw failure behind a renderer fallback", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-draw-failure-"));
+  try {
+    const propsPath = join(directory, "props.json");
+    writeFileSync(propsPath, JSON.stringify({ throwDraw: true }));
+    const result = runCli([
+      "render",
+      effectComposerEntry,
+      "three:composer-subject",
+      "--export",
+      "createEffectComposerScene",
+      "--renderer",
+      "three",
+      "--props",
+      propsPath,
+      "--out",
+      join(directory, "failure.png"),
+    ]);
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, FIXTURE_DRAW_FAILURE);
+    assert.equal(existsSync(join(directory, "failure.png")), false);
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
 });
 
 test("routes a selected Three.js factory by contract rather than export name", () => {
@@ -495,9 +607,77 @@ test("separates a failed delivery-scale assertion from successful execution", ()
     assert.equal(report.assessment.decisionOwner, "sceneproof-assertion");
     assert.equal(report.assessment.objective, "delivery-scale");
     assert.equal(report.assessment.verdict, "failed");
+    assert.match(
+      report.recommendations.deliveryReview.command,
+      DELIVERY_REVIEW_ONE
+    );
   } finally {
     rmSync(directory, { force: true, recursive: true });
   }
+});
+
+test("keeps literal delivery evidence when a delivery-review assertion misses", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-delivery-review-"));
+  try {
+    const result = runCli([
+      "render",
+      litIsolateEntry,
+      "subject",
+      "--export",
+      "createScene",
+      "--renderer",
+      "three",
+      "--delivery-review",
+      "1",
+      "--width",
+      "160",
+      "--height",
+      "120",
+      "--out",
+      directory,
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.success, true);
+    assert.equal(report.execution.status, "succeeded");
+    assert.equal(report.assertion.satisfied, false);
+    assert.equal(report.assessment.verdict, "failed");
+    assert.equal(report.lifecycle.sceneInstances, 1);
+    for (const artifact of [
+      report.artifacts.delivery,
+      report.artifacts.detail,
+      report.artifacts.contactSheet,
+      report.artifacts.manifest,
+    ]) {
+      assert.ok(existsSync(artifact), artifact);
+      assert.ok(statSync(artifact).size > 0, artifact);
+    }
+    assert.equal(report.variants.delivery.camera.framing, "source");
+    assert.equal(report.variants.delivery.camera.modified, false);
+    assert.equal(report.variants.detail.camera.framing, "fit");
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("rejects a delivery review that disguises delivery with a generated view", () => {
+  const result = runCli([
+    "render",
+    litIsolateEntry,
+    "subject",
+    "--export",
+    "createScene",
+    "--renderer",
+    "three",
+    "--delivery-review",
+    "24",
+    "--framing",
+    "fit",
+    "--view",
+    "front",
+  ]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, DELIVERY_REVIEW_SOURCE_CAMERA);
 });
 
 test("accepts --isolate as a composable no-op alias on scout", () => {
@@ -688,6 +868,9 @@ test("preserves the complete source camera when original framing is requested", 
       report.camera.resolved.quaternion,
       report.camera.source.quaternion
     );
+    assert.match(report.recommendations.fitTarget.command, FIT_FRAMING_FLAG);
+    assert.match(report.recommendations.fitTarget.command, ACTION_INPUT_FLAG);
+    assert.match(report.recommendations.fitTarget.command, TIME_ZERO_FLAG);
     assert.notDeepEqual(readFileSync(before), readFileSync(during));
   } finally {
     rmSync(directory, { force: true, recursive: true });
@@ -893,7 +1076,7 @@ test("fits an orthographic top view to projected target extent", () => {
   }
 });
 
-test("puts a copy-ready reference comparison next action on an unassessed render", () => {
+test("does not invent a missing-reference suggestion on an unassessed render", () => {
   const directory = mkdtempSync(join(tmpdir(), "sceneproof-next-action-"));
   const fixtureProps = join(directory, "smooth.json");
   writeFileSync(fixtureProps, JSON.stringify({ jagged: false }));
@@ -917,13 +1100,8 @@ test("puts a copy-ready reference comparison next action on an unassessed render
     assert.equal(result.status, 0, result.stderr);
     const report = JSON.parse(result.stdout);
     assert.equal(report.assessment.verdict, "not-requested");
-    assert.ok(
-      report.nextActions.some(
-        (action: { command: string; reason: string }) =>
-          action.command.includes("--reference <image>") &&
-          VISUAL_QUALITY_VERDICT.test(action.reason)
-      )
-    );
+    assert.equal(report.nextActions, undefined);
+    assert.equal(report.recommendations, undefined);
   } finally {
     rmSync(directory, { force: true, recursive: true });
   }
@@ -1815,9 +1993,123 @@ test("captures deterministic transition frames in one scene lifecycle", () => {
     assert.ok(existsSync(report.artifacts.contactSheet));
     assert.ok(existsSync(report.artifacts.manifest));
     assert.equal(report.rasterizer.kind, "swiftshader-cpu");
+    assert.match(
+      report.recommendations.inspectInterveningMotion.command,
+      DENSE_CHECKPOINT_RANGE
+    );
   } finally {
     rmSync(directory, { force: true, recursive: true });
   }
+});
+
+test("captures a continuous timeline as saved frames, APNG, contact sheet, and motion map", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-motion-test-"));
+  try {
+    const result = runCli([
+      "render",
+      advancedSceneEntry,
+      "three:semantic-focus",
+      "--export",
+      "createConfiguredScene",
+      "--renderer",
+      "three",
+      "--props",
+      advancedProps,
+      "--frames",
+      "0..250@100ms",
+      "--framing",
+      "source",
+      "--width",
+      "160",
+      "--height",
+      "120",
+      "--out",
+      directory,
+    ]);
+
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.deepEqual(report.timeline, { kind: "continuous", stepMs: 100 });
+    assert.equal(report.frames.length, 4);
+    assert.equal(report.comparisons.length, 3);
+    assert.ok(
+      report.frames.every((frame: { artifact: string }) =>
+        frame.artifact.startsWith(join(directory, "frames"))
+      )
+    );
+    for (const path of [
+      report.artifacts.animatedPng,
+      report.artifacts.contactSheet,
+      report.artifacts.manifest,
+      report.artifacts.motionMap,
+    ]) {
+      assert.ok(existsSync(path), path);
+      assert.ok(statSync(path).size > 0, path);
+    }
+    const animation = readFileSync(report.artifacts.animatedPng);
+    assert.ok(animation.includes(Buffer.from("acTL")));
+    assert.ok(animation.includes(Buffer.from("fcTL")));
+    assert.ok(animation.includes(Buffer.from("fdAT")));
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("routes render-region frames through the continuous timeline lifecycle", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-region-motion-"));
+  try {
+    const result = runCli([
+      "render-region",
+      advancedSceneEntry,
+      "--export",
+      "createConfiguredScene",
+      "--renderer",
+      "three",
+      "--props",
+      advancedProps,
+      "--region",
+      "10,20,80,60",
+      "--frames",
+      "0..200@100ms",
+      "--width",
+      "160",
+      "--height",
+      "120",
+      "--out",
+      directory,
+    ]);
+
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.timeline.kind, "continuous");
+    assert.equal(report.frames.length, 3);
+    assert.deepEqual(pngSize(report.frames[0].artifact), {
+      height: 60,
+      width: 80,
+    });
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("rejects --time with either checkpoint or continuous frames", () => {
+  const result = runCli([
+    "render",
+    advancedSceneEntry,
+    "three:semantic-focus",
+    "--export",
+    "createConfiguredScene",
+    "--renderer",
+    "three",
+    "--props",
+    advancedProps,
+    "--time",
+    "100",
+    "--frames",
+    "0..200@100ms",
+  ]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, FRAMES_TIME_CONFLICT);
 });
 
 test("fails an action sequence that contains no transition and explains the null result", () => {
@@ -1956,6 +2248,10 @@ test("doctor reports Chromium and WebGL readiness with actionable execution guid
   );
   assert.match(report.executionGuidance, DIRECT_COMMAND_GUIDANCE);
   assert.match(report.executionGuidance, LOCAL_RENDER_GUIDANCE);
+  assert.equal(report.installation.effectiveVersion, packageVersion);
+  assert.equal(report.installation.mode, "source-checkout");
+  assert.equal(typeof report.installation.resolvedEntry, "string");
+  assert.equal(typeof report.installation.bunGlobalPackage.path, "string");
 });
 
 test("doctor can require both graphics backends explicitly", () => {
@@ -2231,8 +2527,13 @@ test("browser launch failure exits non-zero with local-render permission guidanc
   });
 
   assert.notEqual(result.status, 0);
-  assert.equal(result.stdout, "");
-  assert.match(result.stderr, CHROMIUM_PERMISSION_ERROR);
+  assert.equal(result.stderr, "");
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.success, false);
+  assert.equal(report.checks.browserLaunched, false);
+  assert.match(report.browserFailure, CHROMIUM_PERMISSION_ERROR);
+  assert.equal(report.installation.effectiveVersion, packageVersion);
+  assert.equal(typeof report.installation.resolvedEntry, "string");
 });
 
 test("inspect rebuilds source into a deterministic structural scene", () => {

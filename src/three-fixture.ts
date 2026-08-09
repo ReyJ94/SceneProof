@@ -17,6 +17,25 @@ export type ThreeFixtureContext<Props = Record<string, unknown>> = {
   width: number;
 };
 
+export type ThreeFixtureDrawContext = {
+  camera: Camera;
+  renderer: WebGLRenderer | WebGPURenderer;
+  scene: Scene;
+  viewport: {
+    fullHeight: number;
+    fullWidth: number;
+    pixelHeight: number;
+    pixelRatio: number;
+    pixelWidth: number;
+    region: {
+      height: number;
+      width: number;
+      x: number;
+      y: number;
+    };
+  };
+};
+
 export type ThreeSemanticTargetMember =
   | {
       instanceId: number;
@@ -44,6 +63,7 @@ export type ThreeFixtureResult = {
   >;
   camera: Camera;
   dispose?: () => void | Promise<void>;
+  draw?: (context: ThreeFixtureDrawContext) => void | Promise<void>;
   ready?: Promise<void>;
   renderer?: WebGLRenderer | WebGPURenderer;
   scene: Scene;

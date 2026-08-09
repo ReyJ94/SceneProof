@@ -1,5 +1,43 @@
 # Changelog
 
+## [0.8.0] - 2026-08-09
+
+### Added
+
+- Continuous Three.js timelines with `start..end@stepms` syntax, lossless APNG,
+  saved raw frames, a representative contact sheet, one aggregate motion map,
+  and adjacent metrics calculated from the persisted PNGs.
+- Fixture-owned `draw(context)` for real post-processing and custom render
+  pipelines, with separate draw/renderer ownership and color-pipeline
+  provenance in reports.
+- Time-aware Three.js matrices with one bundle/browser, one scene lifecycle per
+  variant, APNG per continuous variant, within-variant motion comparisons, and
+  same-time cross-variant comparisons without ranking.
+- `--delivery-review <pixels>` for literal source-camera delivery evidence,
+  a fresh fitted detail view, and a mechanical height assertion in one scene
+  lifecycle.
+- Installation-drift findings in `doctor`, including invoked and resolved
+  paths, effective and Bun-global versions, PATH duplicates, and one exact
+  reinstall command.
+
+### Changed
+
+- Omitted visual output paths allocate unique UTC-stamped directories under
+  `artifacts/sceneproof/`; prior evidence is never silently overwritten.
+- `render-region --frames` now uses the timeline lifecycle instead of ignoring
+  the option. `--frames` and `--time` are explicitly mutually exclusive.
+- Raster statistics, comparisons, frame deltas, and motion maps are derived
+  from saved PNG bytes and carry source paths and SHA-256 digests.
+- Ordinary render suggestions are limited to two mechanically supported next
+  acquisitions; Scout retains its four-purpose evidence portfolio.
+
+### Fixed
+
+- Fixture-owned renderers that present through `EffectComposer` or another
+  custom draw owner no longer receive an unintended second `renderer.render`.
+- `doctor` preserves installation findings when Chromium is missing or fails
+  to launch.
+
 ## [0.7.0] - 2026-08-03
 
 ### Added

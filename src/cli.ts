@@ -8,12 +8,14 @@ import { z } from "zod";
 
 import packageMetadata from "../package.json" with { type: "json" };
 import { createAgentBriefing, createFullAgentReport } from "./agent-report.js";
+import { allocateArtifactPath } from "./artifact-path.js";
 import { diagnoseBrowser } from "./browser-runtime.js";
 import { renderEvidenceSheet } from "./contact-sheet.js";
 import {
   persistJsonEvidence,
   referenceJsonEvidence,
 } from "./evidence-store.js";
+import { diagnoseInstallation } from "./installation-diagnostics.js";
 import { completeReactProps, inferReactPropsTemplate } from "./react-props.js";
 import {
   inspectReact,
@@ -39,6 +41,8 @@ import type {
 import { resolveSceneNodeId } from "./scene-schema.js";
 import type { SourceOverlay } from "./source-bundle.js";
 import { renderThreeContextPair } from "./three-context-pair.js";
+import { renderThreeDeliveryReview } from "./three-delivery-review.js";
+import { renderThreeMatrix as renderTemporalThreeMatrix } from "./three-matrix.js";
 import {
   type FixtureProvenance,
   inspectThree,
@@ -139,6 +143,7 @@ type CommonOptions = {
 type RenderOptions = CommonOptions & {
   compare?: string;
   contextPair?: boolean;
+  deliveryReview?: string;
   deliveryScale?: string;
   deliveryTolerance: string;
   frames?: string;
@@ -223,8 +228,8 @@ function renderOptions(command: Command): Command {
     )
     .option("--margin <fraction>", "target framing margin", "0.12")
     .option(
-      "--frames <before,ms...,settled>",
-      "capture a deterministic Three.js sequence in one scene lifecycle"
+      "--frames <checkpoints|start..end@stepms>",
+      "capture Three.js checkpoints or a continuous motion artifact in one scene lifecycle"
     )
     .option(
       "--stats",
@@ -241,6 +246,10 @@ function renderOptions(command: Command): Command {
     .option(
       "--delivery-scale <pixels>",
       "assert the target's logical rendered height at delivery"
+    )
+    .option(
+      "--delivery-review <pixels>",
+      "pair literal source-camera delivery evidence with a fresh fitted detail render"
     )
     .option(
       "--delivery-tolerance <fraction>",
@@ -319,11 +328,7 @@ function scoutOptions(command: Command): Command {
     .option("--isolate", "isolate the target (the Scout default)")
     .option("--no-isolate", "include unrelated objects in discovery views")
     .option("--background <color>", "background color or transparent")
-    .option(
-      "--out <directory>",
-      "Scout artifact directory",
-      "sceneproof-scout"
-    );
+    .option("--out <directory>", "Scout artifact directory");
 }
 
 type LoadedJson = {
@@ -971,16 +976,12 @@ program
     "--compare",
     "measure adjacent raster change; omitted by default for mixed evidence"
   )
-  .option(
-    "--out <path>",
-    "contact-sheet file or artifact directory",
-    "sceneproof-sheet"
-  )
+  .option("--out <path>", "contact-sheet file or artifact directory")
   .action(
     async (raw: {
       compare?: boolean;
       item: string[];
-      out: string;
+      out?: string;
     }): Promise<void> => {
       const items = raw.item.map((value) => {
         const separator = value.indexOf("=");
@@ -998,7 +999,12 @@ program
         await renderEvidenceSheet({
           compare: raw.compare ?? false,
           items,
-          out: raw.out,
+          out:
+            raw.out ??
+            (await allocateArtifactPath({
+              command: "sheet",
+              target: items.map((item) => item.label).join("-"),
+            })),
         }),
         { command: "sheet", visual: true }
       );
@@ -1014,21 +1020,36 @@ sourceOptions(
     .argument("<entry>", "TypeScript or JavaScript source entry")
     .argument("<node-id>", "deterministic scene node ID")
     .requiredOption("--variants <file>", "labeled variant-state manifest")
-    .option("--scale <number>", "source pixel density", "1")
     .option(
-      "--out <path>",
-      "contact-sheet file or artifact directory",
-      "sceneproof-matrix"
+      "--frames <checkpoints|start..end@stepms>",
+      "Three.js-only time columns; continuous ranges also emit one APNG per variant"
     )
+    .option("--scale <number>", "source pixel density", "1")
+    .option("--out <path>", "contact-sheet file or artifact directory")
 ).action(
   async (
     entry: string,
     nodeId: string,
-    raw: CommonOptions & { out: string; scale: string; variants: string }
+    raw: CommonOptions & {
+      frames?: string;
+      out?: string;
+      scale: string;
+      variants: string;
+    }
   ) => {
+    if (raw.frames && raw.time !== undefined) {
+      throw new Error("Matrix --frames and --time are mutually exclusive.");
+    }
     const prepared = await prepareSource(entry, raw);
     const manifest = await parseMatrixManifest(raw.variants);
     const scale = PositiveScale.parse(raw.scale);
+    const matrixOut = raw.out
+      ? resolve(raw.out)
+      : await allocateArtifactPath({
+          command: "matrix",
+          entry: prepared.absoluteEntry,
+          target: nodeId,
+        });
     const css = (raw.css ?? []).map((path) => resolve(path));
     const provenance = {
       aliases: prepared.aliases,
@@ -1047,39 +1068,48 @@ sourceOptions(
           "Three.js matrix source overlays are not supported in the shared bundle lifecycle; route the value through fixture props."
         );
       }
+      const threeOptions = {
+        ...(raw.action === undefined ? {} : { action: raw.action }),
+        actionInput: prepared.actionInput,
+        aliases: prepared.aliases,
+        entry: prepared.absoluteEntry,
+        exportName: raw.export,
+        fixture: prepared.fixture,
+        framing: "source" as const,
+        height: prepared.height,
+        margin: 0.12,
+        nodeId,
+        out: matrixOut,
+        projection: "source" as const,
+        props: prepared.props,
+        provenance,
+        scale,
+        threeBackend: prepared.threeBackend,
+        ...(prepared.timeMs === undefined ? {} : { timeMs: prepared.timeMs }),
+        variants: manifest.variants.map((variant) => ({
+          label: variant.label,
+          props: variant.props,
+        })),
+        width: prepared.width,
+        zoom: 1,
+      };
       output(
-        await renderThreeMatrix({
-          ...(raw.action === undefined ? {} : { action: raw.action }),
-          actionInput: prepared.actionInput,
-          aliases: prepared.aliases,
-          entry: prepared.absoluteEntry,
-          exportName: raw.export,
-          fixture: prepared.fixture,
-          framing: "source",
-          height: prepared.height,
-          margin: 0.12,
-          nodeId,
-          out: raw.out,
-          projection: "source",
-          props: prepared.props,
-          provenance,
-          scale,
-          threeBackend: prepared.threeBackend,
-          ...(prepared.timeMs === undefined ? {} : { timeMs: prepared.timeMs }),
-          variants: manifest.variants.map((variant) => ({
-            label: variant.label,
-            props: variant.props,
-          })),
-          width: prepared.width,
-          zoom: 1,
-        }),
+        raw.frames
+          ? await renderTemporalThreeMatrix({
+              ...threeOptions,
+              frames: raw.frames,
+            })
+          : await renderThreeMatrix(threeOptions),
         { command: "matrix", visual: true }
       );
       return;
     }
+    if (raw.frames) {
+      throw new Error("Matrix --frames requires a Three.js fixture.");
+    }
     const report = await renderVariantMatrix({
       baseProps: prepared.props,
-      out: raw.out,
+      out: matrixOut,
       provenance,
       render: async (props, out, sourceOverlays) =>
         await renderReact({
@@ -1188,6 +1218,9 @@ renderOptions(
     }
     // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This command boundary validates mutually exclusive React and Three.js render surfaces before dispatch.
   ) => {
+    if (raw.frames && raw.time !== undefined) {
+      throw new Error("--frames and --time are mutually exclusive.");
+    }
     if (
       !(raw.reference || raw.referenceSet) &&
       (raw.referenceMask ||
@@ -1236,13 +1269,27 @@ renderOptions(
       raw.projection
     ) as ThreeProjection;
     const margin = NonnegativeNumber.parse(raw.margin);
-    let defaultOutput = "sceneproof-render.png";
-    if (raw.frames) {
-      defaultOutput = "sceneproof-frames";
+    const aggregateOutput = Boolean(
+      raw.frames || raw.deliveryReview || raw.referenceSet || raw.contextPair
+    );
+    let defaultArtifactCommand = "render";
+    if (raw.deliveryReview) {
+      defaultArtifactCommand = "delivery-review";
+    } else if (raw.frames) {
+      defaultArtifactCommand = "frames";
     } else if (raw.referenceSet) {
-      defaultOutput = "sceneproof-reference-set";
+      defaultArtifactCommand = "reference-set";
+    } else if (raw.contextPair) {
+      defaultArtifactCommand = "context-pair";
     }
-    const out = resolve(raw.out ?? defaultOutput);
+    const out = raw.out
+      ? resolve(raw.out)
+      : await allocateArtifactPath({
+          command: defaultArtifactCommand,
+          entry: prepared.absoluteEntry,
+          ...(aggregateOutput ? {} : { filename: "render.png" }),
+          target: nodeId,
+        });
     if (prepared.renderer === "three") {
       const view = parseThreeView(raw.view);
       if (
@@ -1290,6 +1337,42 @@ renderOptions(
         ...(view === undefined ? {} : { view }),
         zoom: PositiveScale.parse(raw.zoom),
       };
+      if (raw.deliveryReview) {
+        if (
+          raw.frames ||
+          raw.contextPair ||
+          raw.reference ||
+          raw.referenceSet ||
+          raw.sweep ||
+          raw.compare ||
+          raw.silhouette ||
+          raw.deliveryScale
+        ) {
+          throw new Error(
+            "--delivery-review cannot be combined with frames, context-pair, references, sweep, compare, silhouette, or --delivery-scale."
+          );
+        }
+        if (
+          framing !== "source" ||
+          projection !== "source" ||
+          raw.view !== "original" ||
+          raw.zoom !== "1" ||
+          raw.lookAt
+        ) {
+          throw new Error(
+            "--delivery-review requires literal source framing, source projection, the original fixture camera, no zoom, and no look-at override."
+          );
+        }
+        output(
+          await renderThreeDeliveryReview({
+            ...common,
+            out,
+            requestedHeightPx: PositiveScale.parse(raw.deliveryReview),
+          }),
+          { command: "render", visual: true }
+        );
+        return;
+      }
       if (raw.contextPair) {
         if (
           raw.frames ||
@@ -1441,6 +1524,7 @@ renderOptions(
       raw.stats ||
       raw.compare ||
       raw.contextPair ||
+      raw.deliveryReview ||
       raw.deliveryScale ||
       raw.silhouette ||
       raw.reference ||
@@ -1485,7 +1569,11 @@ renderOptions(
   async (
     entry: string,
     raw: RenderOptions & { region: string; background?: string }
+    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This command boundary validates region-only evidence combinations and routes React, single-frame Three, or timeline Three lifecycles without hiding unsupported options.
   ) => {
+    if (raw.frames && raw.time !== undefined) {
+      throw new Error("--frames and --time are mutually exclusive.");
+    }
     if (
       raw.compare ||
       raw.silhouette ||
@@ -1505,8 +1593,48 @@ renderOptions(
       height: prepared.height,
       width: prepared.width,
     });
-    const out = resolve(raw.out ?? "sceneproof-region.png");
+    const out = raw.out
+      ? resolve(raw.out)
+      : await allocateArtifactPath({
+          command: raw.frames ? "region-frames" : "render-region",
+          entry: prepared.absoluteEntry,
+          ...(raw.frames ? {} : { filename: "region.png" }),
+          target: raw.region,
+        });
     if (prepared.renderer === "three") {
+      if (raw.frames) {
+        if (raw.stats) {
+          throw new Error(
+            "--stats cannot be combined with --frames; frame sequences report adjacent motion comparisons."
+          );
+        }
+        output(
+          await renderThreeFrames({
+            ...(raw.action === undefined ? {} : { action: raw.action }),
+            actionInput: prepared.actionInput,
+            aliases: prepared.aliases,
+            ...(raw.background === undefined
+              ? {}
+              : { background: raw.background }),
+            entry: prepared.absoluteEntry,
+            exportName: raw.export,
+            fixture: prepared.fixture,
+            frames: raw.frames,
+            framing: "source",
+            height: prepared.height,
+            nodeId: "__sceneproof_region__",
+            out,
+            props: prepared.props,
+            region,
+            scale,
+            threeBackend: prepared.threeBackend,
+            width: prepared.width,
+            zoom: 1,
+          }),
+          { command: "render-region", visual: true }
+        );
+        return;
+      }
       output(
         await renderThreeRegion({
           ...(raw.action === undefined ? {} : { action: raw.action }),
@@ -1575,7 +1703,7 @@ scoutOptions(
       height: string;
       isolate: boolean;
       lookAt?: string;
-      out: string;
+      out?: string;
       props?: string;
       renderer: string;
       time?: string;
@@ -1602,7 +1730,13 @@ scoutOptions(
       height: prepared.height,
       isolate: raw.isolate,
       nodeId,
-      out: resolve(raw.out),
+      out: raw.out
+        ? resolve(raw.out)
+        : await allocateArtifactPath({
+            command: "scout",
+            entry: prepared.absoluteEntry,
+            target: nodeId,
+          }),
       props: prepared.props,
       threeBackend: prepared.threeBackend,
       ...(prepared.timeMs === undefined ? {} : { timeMs: prepared.timeMs }),
@@ -1629,7 +1763,46 @@ program
     "any"
   )
   .action(async (raw: { requireBackend: string }) => {
-    const report = await diagnoseBrowser();
+    const installation = await diagnoseInstallation({
+      effectiveVersion: packageMetadata.version,
+      modulePath: import.meta.path,
+    });
+    let browserFailure: string | null = null;
+    let report: Awaited<ReturnType<typeof diagnoseBrowser>>;
+    try {
+      report = await diagnoseBrowser();
+    } catch (error) {
+      browserFailure = error instanceof Error ? error.message : String(error);
+      report = {
+        checks: {
+          browserLaunched: false,
+          chromiumFound: false,
+          webglAvailable: false,
+          webgpuAvailable: false,
+        },
+        chromiumPath:
+          process.env.SCENEPROOF_CHROME_PATH ??
+          process.env.UISCENE_CHROME_PATH ??
+          "unavailable",
+        executionGuidance: browserFailure,
+        rasterizer: { kind: "hardware-or-unknown", renderer: null },
+        renderer: null,
+        success: false,
+        webgpu: {
+          adapter: {
+            architecture: null,
+            available: false,
+            description: null,
+            device: null,
+            isFallbackAdapter: null,
+            vendor: null,
+          },
+          rasterizer: { kind: "hardware-or-unknown", renderer: null },
+          renderError: browserFailure,
+          rendered: false,
+        },
+      };
+    }
     const requirement = z
       .enum(["any", "webgl", "webgpu", "both"])
       .parse(raw.requireBackend);
@@ -1643,8 +1816,13 @@ program
     } else if (requirement === "webgl") {
       requirementMet = report.checks.webglAvailable;
     }
-    report.success = report.success && requirementMet;
-    Object.assign(report, { requiredBackend: requirement, requirementMet });
+    report.success = report.success && requirementMet && installation.ready;
+    Object.assign(report, {
+      installation,
+      ...(browserFailure ? { browserFailure } : {}),
+      requiredBackend: requirement,
+      requirementMet,
+    });
     output(report);
     if (!report.success) {
       process.exitCode = 1;

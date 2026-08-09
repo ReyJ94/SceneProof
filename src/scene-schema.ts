@@ -1,6 +1,5 @@
 import { z } from "zod";
-
-import type { GraphicsInfo } from "./three-backend.js";
+import type { GraphicsInfo, ThreePipelineInfo } from "./three-backend.js";
 
 export const BoundsSchema = z.object({
   height: z.number().nonnegative(),
@@ -203,6 +202,10 @@ export type RasterStats = {
     p90: number;
     p99: number;
   };
+  source?: {
+    digest: string;
+    path: string;
+  };
 };
 
 export type RasterizerInfo = {
@@ -388,6 +391,7 @@ export type RenderReport = {
   artifact: string;
   provenance?: unknown;
   nextActions?: Array<{ command: string; reason: string }>;
+  recommendations?: Record<string, { command: string; reason: string[] }>;
   checks: RenderChecks;
   comparison?: {
     artifacts: {
@@ -454,6 +458,7 @@ export type RenderReport = {
   };
   fixture?: unknown;
   graphics?: GraphicsInfo;
+  pipeline?: ThreePipelineInfo;
   context?: {
     backgroundPresent: boolean;
     contextRenderableCount: number;
@@ -524,6 +529,7 @@ export type RegionRenderReport = {
   };
   fixture?: unknown;
   graphics?: GraphicsInfo;
+  pipeline?: ThreePipelineInfo;
   rasterizer?: RasterizerInfo;
   renderer?: "react" | "three";
   stats?: RasterStats;
@@ -574,6 +580,7 @@ export type ScoutReport = {
   candidates: ScoutCandidate[];
   evidence: EvidenceStatus;
   graphics?: GraphicsInfo;
+  pipeline?: ThreePipelineInfo;
   execution: ExecutionStatus;
   focus: {
     nodeId?: string;
@@ -629,26 +636,33 @@ export type ScoutRecommendation = {
 export type FrameRenderReport = {
   assessment: VisualAssessment;
   artifacts: {
+    animatedPng?: string;
     contactSheet: string;
     directory: string;
     manifest: string;
+    motionMap?: string;
   };
   command: "render-frames";
   evidence: EvidenceStatus;
   graphics?: GraphicsInfo;
+  pipeline?: ThreePipelineInfo;
   execution: ExecutionStatus;
   action: {
     mutatedObjectCount: number | null;
     requested: boolean;
   };
   comparisons: Array<{
-    artifacts: {
+    artifacts?: {
       amplifiedDifference: string;
     };
     changedPixelFraction: number;
     classification: "below-perceptual-floor" | "changed" | "identical";
     from: string;
     normalizedRasterDelta: number;
+    sources?: {
+      from: { digest: string; path: string };
+      to: { digest: string; path: string };
+    };
     to: string;
   }>;
   frames: Array<{
@@ -664,6 +678,7 @@ export type FrameRenderReport = {
     sceneInstances: 1;
   };
   provenance?: unknown;
+  recommendations?: Record<string, { command: string; reason: string[] }>;
   quality: {
     motionDetected: boolean;
     perceptualFloor: {
@@ -673,6 +688,10 @@ export type FrameRenderReport = {
   };
   rasterizer?: RasterizerInfo;
   success: boolean;
+  timeline?: {
+    kind: "checkpoint" | "continuous";
+    stepMs: number | null;
+  };
   warnings: string[];
 };
 

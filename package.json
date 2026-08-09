@@ -1,6 +1,6 @@
 {
   "name": "sceneproof",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Source-grounded visual evidence harness for coding agents—inspect, render, and compare real React and Three.js surfaces.",
   "private": false,
   "license": "MIT",
@@ -52,7 +52,7 @@
     "lint": "ultracite check .",
     "lint:fix": "ultracite fix .",
     "prepack": "bun run check",
-    "test": "bun test --timeout 30000 tests/agent-surface.test.ts tests/cli.test.ts tests/react-renderer.test.ts tests/source-bundle.test.ts",
+    "test": "bun test --timeout 30000 tests/agent-surface.test.ts tests/cli.test.ts tests/frame-schedule.test.ts tests/installation-diagnostics.test.ts tests/react-renderer.test.ts tests/source-bundle.test.ts",
     "test:cli": "bun test --timeout 30000 tests/cli.test.ts",
     "test:compiled": "bun tests/compiled-cli-smoke.ts",
     "typecheck": "tsc --noEmit"

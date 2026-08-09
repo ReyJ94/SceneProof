@@ -4,6 +4,34 @@ SceneProof fixtures make source state deterministic without inventing a generic
 interaction language. The fixture owns the scene lifecycle and domain actions;
 SceneProof owns selection, evidence, camera framing, and capture.
 
+## Custom draw pipelines
+
+A fixture that uses `EffectComposer`, multiple passes, or another real visual
+owner can provide `draw`. SceneProof sizes the renderer and resolves the camera
+first, then calls `draw` exactly once instead of calling `renderer.render`:
+
+```ts
+import { defineThreeFixture } from "sceneproof/three";
+
+export const createScene = defineThreeFixture(() => ({
+  scene,
+  camera,
+  renderer,
+  draw({ viewport }) {
+    composer.setSize(viewport.pixelWidth, viewport.pixelHeight);
+    composer.render();
+  },
+}));
+```
+
+`viewport` includes the full logical size, logical region, output pixel size,
+and pixel ratio. Draw errors fail the command; SceneProof never falls back to a
+second render. Reports distinguish `pipeline.drawOwner` from
+`pipeline.rendererOwner` and record tone mapping, exposure, and output color
+space. The hook is used by ordinary renders, regions, timelines, Scout,
+matrices, context pairs, delivery review, reference sets, and compatibility
+sweeps.
+
 ## Inspector ownership and provenance
 
 Prefer an existing application export when it already creates the real scene
@@ -210,6 +238,12 @@ resolved camera. The default tolerance is 5%; override it with
 execution succeeds while the requested mechanical assertion fails. Visual
 acceptance remains separate.
 
+`--delivery-review <pixels>` is the safer aggregate for a shipping-size claim.
+It requires literal source framing, projection, and fixture camera. The first
+panel measures that ordinary delivery view; the second is a fresh fitted detail
+render from the same state and draw pipeline. An assertion miss leaves all
+artifacts intact and does not turn successful execution into a process failure.
+
 ## Scout evidence portfolio
 
 Scout returns four intent-specific, copy-ready suggestions:
@@ -283,10 +317,18 @@ weakest measured view, and writes one unified contact sheet. The agent inspects
 the per-view evidence; an aggregate does not erase a missing or low-confidence
 perspective.
 
-Frame sequences persist an amplified difference panel for every adjacent pair,
-alongside normalized raster delta, changed-signal coverage, and classification.
-The panels are included in the contact sheet even when frames are identical,
-so a successful capture cannot silently certify a null transition.
+Comma-separated frame sequences are sparse checkpoints and retain an amplified
+difference panel for each adjacent pair. `start..end@stepms` is continuous
+motion evidence: the end is always included, ranges cap at 180 frames, and the
+result contains saved PNG frames, a lossless APNG, up to 12 representative
+contact-sheet frames, one aggregate motion map, and the JSON report. All raster
+metrics are decoded from the saved PNG bytes rather than the transient canvas.
+`render-region --frames` follows the same contract.
+
+Add `--frames` to a Three.js `matrix` to place variants in rows and
+representative times in columns. Continuous matrices cap raw work at 240 frames
+across variants and emit one APNG per variant. Reports keep within-variant
+motion separate from same-time variant comparisons and never select a winner.
 
 ## Execution diagnostics
 
@@ -297,6 +339,12 @@ WebGL is the default; WebGPU is opt-in and strict:
 sceneproof render scene.ts three:subject --three-backend webgpu --out subject.png
 sceneproof doctor --require-backend both
 ```
+
+`doctor` also reports the invoked path, resolved entry, effective version, Bun
+global package manifest/version, and all PATH candidates. Installed-bin version
+drift fails readiness with one reinstall command; a deliberately run source
+checkout warns without being treated as a broken installation. Installation
+findings remain available even when Chromium cannot launch.
 
 When WebGPU is requested, SceneProof bundles the entry's bare `three` import
 against `three/webgpu`, initializes `WebGPURenderer`, and verifies the actual
