@@ -52,7 +52,10 @@ at the layer that is actually unknown:
 5. **Raster** — only once framing is right: are more freshly rendered pixels
    needed to judge typography, edges, or material detail?
 6. **Coherence** — does the change hold up in context, next to its
-   neighbors, under the states and viewports that matter?
+   neighbors, under the states and viewports that matter? Render
+   `--context-pair` (or `--isolated` alongside `--in-context`) to get the
+   isolated evidence and the full-scene evidence from one lifecycle, not two
+   separately staged renders that can silently drift apart.
 
 The classic waste is buying pixels for a structure problem: rendering at 8x
 when the mesh has zero bounds, or screenshotting a component whose state
@@ -83,7 +86,12 @@ contrast, and sparse-signal problems. They do not establish occlusion or visual
 adequacy on their own. Prefer a tighter region, closer framing, or a more
 revealing angle before reaching for `--scale`; increase scale only when the
 relevant detail already occupies an informative part of the frame and raster
-density is the last limit.
+density is the last limit. A detail render at scale is real evidence, not an
+approximation, but it is evidence of what is *there*, not of what ships: a
+flaw visible at 8x may be invisible at delivered size, and a composition that
+reads fine zoomed in may be cramped at the size it actually ships. Pair a
+detail render with `--delivery-review` before claiming the shipped view is
+correct.
 
 ## Freshness and provenance are non-negotiable
 
