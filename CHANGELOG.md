@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1] - 2026-08-27
+
+### Changed
+
+- Require Bun 1.4.0+ — `playwright-core` now runs natively on Bun and `Bun.WebView` drives the installed Chromium over CDP, so no `playwright install` browser download is needed when a system Chromium exists (Omarchy provides `/usr/bin/chromium`).
+- `BUN_CHROME_PATH` is now recognized alongside `SCENEPROOF_CHROME_PATH`; additional Chromium candidates (`chromium-browser`, `brave-browser`, `microsoft-edge`) are probed in the same order as `Bun.WebView`.
+
 ## [0.8.0] - 2026-08-09
 
 ### Added

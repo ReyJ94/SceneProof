@@ -1,6 +1,6 @@
 {
   "name": "sceneproof",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "Source-grounded visual evidence harness for coding agents—inspect, render, and compare real React and Three.js surfaces.",
   "private": false,
   "license": "MIT",
