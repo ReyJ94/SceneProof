@@ -6,16 +6,22 @@ import { loadRuntimeDependency } from "./runtime-dependency.js";
 const CHROME_CANDIDATES = [
   process.env.SCENEPROOF_CHROME_PATH,
   process.env.UISCENE_CHROME_PATH,
+  process.env.BUN_CHROME_PATH,
   "/usr/bin/google-chrome",
   "/usr/bin/google-chrome-stable",
   "/usr/bin/chromium",
+  "/usr/bin/chromium-browser",
+  "/usr/bin/brave-browser",
+  "/usr/bin/microsoft-edge",
 ].filter((path): path is string => Boolean(path));
 
 export function chromePath(): string {
+  // Bun 1.4's Bun.WebView auto-detects the same binaries (BUN_CHROME_PATH, /usr/bin/chromium, etc.)
+  // and playwright-core now runs natively on Bun — no separate browser download needed when a system Chromium exists.
   const path = CHROME_CANDIDATES.find(existsSync);
   if (!path) {
     throw new Error(
-      "No Chromium executable found. Set SCENEPROOF_CHROME_PATH to a local Chrome or Chromium binary."
+      "No Chromium executable found. Set SCENEPROOF_CHROME_PATH or BUN_CHROME_PATH to a local Chrome or Chromium binary (Omarchy provides /usr/bin/chromium)."
     );
   }
   return path;

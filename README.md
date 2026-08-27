@@ -23,8 +23,8 @@ bun add --global github:ReyJ94/SceneProof
 sceneproof --help
 ```
 
-SceneProof needs [Bun](https://bun.com/docs/installation) 1.3.14+ and a local
-Chrome or Chromium. If setup gets fussy, jump to
+SceneProof needs [Bun](https://bun.com/docs/installation) 1.4.0+ and a local
+Chrome or Chromium. Bun 1.4 runs `playwright-core` natively and `Bun.WebView` drives the installed Chromium over CDP — no `playwright install` download needed. If setup gets fussy, jump to
 [troubleshooting](#troubleshooting).
 
 SceneProof also ships with a [`SKILL.md`](skills/sceneproof/SKILL.md) for any
@@ -393,8 +393,12 @@ export PATH="$BUN_INSTALL/bin:$PATH"
 <details>
 <summary><strong>SceneProof can't find Chrome</strong></summary>
 
+Bun 1.4's `Bun.WebView` and `playwright-core` auto-detect `BUN_CHROME_PATH`, `SCENEPROOF_CHROME_PATH`, and system binaries (`/usr/bin/chromium` on Omarchy/Arch, `google-chrome`, `chromium-browser`, etc.). No `playwright install` needed when a system Chromium exists.
+
 ```bash
 export SCENEPROOF_CHROME_PATH="/path/to/chrome"
+# or
+export BUN_CHROME_PATH="/path/to/chrome"
 sceneproof doctor
 ```
 
