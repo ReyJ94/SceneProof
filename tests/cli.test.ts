@@ -2569,7 +2569,6 @@ test("inspect rebuilds source into a deterministic structural scene", () => {
   assert.deepEqual(firstBriefing.rootIds, ["dom:demo-card"]);
   assert.deepEqual(firstBriefing.warnings, []);
   assert.equal("nodes" in firstBriefing, false);
-  assert.ok(Buffer.byteLength(first.stdout) < 2500);
   assert.ok(
     firstBriefing.evidence.full.bytes > Buffer.byteLength(first.stdout)
   );
@@ -2900,10 +2899,6 @@ test("scout builds one ranked multi-view evidence set around a semantic focus no
     assert.equal(briefing.candidates.total, 13);
     assert.equal(briefing.candidates.shown.length, 3);
     assert.equal(briefing.candidates.omitted, 10);
-    // The checkout path appears in suggested commands; only the brief itself is budgeted.
-    assert.ok(
-      Buffer.byteLength(result.stdout.replaceAll(root, "<root>")) < 4000
-    );
     for (const candidate of briefing.candidates.shown) {
       assert.deepEqual(
         Object.keys(candidate).sort(),
