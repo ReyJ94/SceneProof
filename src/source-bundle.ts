@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
-import { dirname, extname, resolve } from "node:path";
+import { delimiter, dirname, extname, resolve } from "node:path";
 import type { Loader, Plugin } from "esbuild";
 
 import {
@@ -12,6 +12,7 @@ import {
 const SOURCE_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"];
 const SOURCE_FILE_FILTER = /\.(?:[cm]?[jt]s|tsx|jsx)$/;
 const SHARED_RUNTIME_IMPORT = /^(?:react(?:-dom)?|three)(?:\/.*)?$/;
+const TOOL_RUNTIME_IMPORT = /^(?:sceneproof|uiscene)(?:\/.*)?$/;
 const WEB_ALIAS_IMPORT = /^@\//;
 const NEXT_LINK_IMPORT = /^next\/link$/;
 const ANY_IMPORT = /.*/;
@@ -257,6 +258,9 @@ function sourceResolutionPlugin(
           loader: "jsx",
         })
       );
+      context.onResolve({ filter: TOOL_RUNTIME_IMPORT }, (args) => ({
+        path: resolveRuntimeDependency(args.path),
+      }));
       context.onResolve({ filter: SHARED_RUNTIME_IMPORT }, (args) => {
         try {
           const dependency =
@@ -286,6 +290,7 @@ export async function bundleBrowserDriver(input: {
   discoverCss?: boolean;
   entry: string;
   source: string;
+  sourcemap?: "inline" | false;
   sourceOverlays?: readonly SourceOverlay[];
   extraCss: readonly string[];
   threeBackend?: "webgl" | "webgpu";
@@ -298,7 +303,7 @@ export async function bundleBrowserDriver(input: {
       build({
         absWorkingDir: dirname(input.entry),
         banner: {
-          js: `globalThis.process ??= { env: { NODE_ENV: "production" } };`,
+          js: `globalThis.process ??= { env: { NODE_ENV: "production" } }; globalThis.process.emitWarning ??= warning => console.warn(warning);`,
         },
         bundle: true,
         define: {
@@ -317,7 +322,7 @@ export async function bundleBrowserDriver(input: {
             input.sourceOverlays ?? []
           ),
         ],
-        sourcemap: "inline",
+        sourcemap: input.sourcemap ?? "inline",
         stdin: {
           contents: input.source,
           loader: "tsx",
@@ -410,6 +415,14 @@ async function compileSourceCss(
   const directives = sources
     .map((path) => `@source ${JSON.stringify(path)};`)
     .join("\n");
+  const tailwindManifest = resolveRuntimeDependency("tailwindcss/package.json");
+  const runtimeNodeModules = dirname(dirname(tailwindManifest));
+  const nodePath = (process.env.NODE_PATH ?? "")
+    .split(delimiter)
+    .filter(Boolean);
+  if (!nodePath.includes(runtimeNodeModules)) {
+    process.env.NODE_PATH = [runtimeNodeModules, ...nodePath].join(delimiter);
+  }
   const [{ default: tailwindcss }, { default: postcss }] = await Promise.all([
     loadRuntimeDependency<typeof import("@tailwindcss/postcss")>(
       "@tailwindcss/postcss"

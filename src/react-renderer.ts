@@ -1,4 +1,4 @@
-import { mkdir, readFile, stat } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 import { launchBrowser, mountBundle } from "./browser-runtime.js";
@@ -24,7 +24,7 @@ type ReactOptions = {
   css: readonly string[];
 };
 
-function driverSource(
+export function reactDriverSource(
   input: ReactOptions,
   variantProps: readonly Record<string, unknown>[] = [input.props]
 ): string {
@@ -50,6 +50,7 @@ function driverSource(
         );
         const selectedProps = variantProps[variantIndex] ?? variantProps[0] ?? {};
         const fixture = selected.sceneproofReactFixture;
+        window.__SCENEPROOF_CONTROLS__ = fixture ?? {};
         const applyDocumentTarget = (element, target) => {
           for (const className of target?.classes ?? []) {
             element.classList.add(className);
@@ -74,10 +75,16 @@ function driverSource(
         flushSync(() => {
           root.render(React.createElement(selected, selectedProps));
         });
-        Promise.resolve(document.fonts?.ready)
+        Promise.resolve()
+          .then(() => fixture?.ready?.(selectedProps))
+          .then(() => document.fonts?.ready)
           .then(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))))
           .then(() => {
             window.__UISCENE_READY__ = true;
+          })
+          .catch((error) => {
+            window.__UISCENE_ERROR__ = "React fixture readiness failed: " +
+              (error instanceof Error ? error.message : String(error));
           });
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
@@ -101,7 +108,7 @@ async function prepareReactPage(
     aliases: options.aliases,
     entry: options.entry,
     extraCss: options.css,
-    source: driverSource(options),
+    source: reactDriverSource(options),
     ...(options.sourceOverlays
       ? { sourceOverlays: options.sourceOverlays }
       : {}),
@@ -433,7 +440,26 @@ async function captureReactTarget(
   const locator = page.locator(
     `[data-uiscene-runtime-id=${JSON.stringify(options.nodeId)}]`
   );
-  await locator.screenshot({ path: output, scale: "device" });
+  const clip = await locator.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return {
+      height: rect.height,
+      width: rect.width,
+      x: rect.x + scrollX,
+      y: rect.y + scrollY,
+    };
+  });
+  const capture = await page.context().newCDPSession(page);
+  try {
+    const { data } = await capture.send("Page.captureScreenshot", {
+      captureBeyondViewport: true,
+      clip: { ...clip, scale: options.scale },
+      format: "png",
+    });
+    await writeFile(output, Buffer.from(data, "base64"));
+  } finally {
+    await capture.detach();
+  }
   const bytes = await readFile(output);
   const renderedSize = pngDimensions(bytes);
   const requestedScaleAchieved = hasRequestedScale(
@@ -494,7 +520,7 @@ export async function renderReactVariants(
     aliases: options.aliases,
     entry: options.entry,
     extraCss: options.css,
-    source: driverSource(
+    source: reactDriverSource(
       { ...options, props: firstVariant.props },
       options.variants.map((variant) => variant.props)
     ),

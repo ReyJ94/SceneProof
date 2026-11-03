@@ -6,6 +6,18 @@ export type ReactFixtureDocumentTarget = {
 };
 
 export type ReactFixtureDefinition<Props = Record<string, unknown>> = {
+  actions?: Record<string, (input?: unknown) => unknown | Promise<unknown>>;
+  seek?: (frame: {
+    index: number;
+    clock: { numerator: number; denominator: number };
+    input?: unknown;
+  }) => void | Promise<void>;
+  settle?: () => void | Promise<void>;
+  /** Resolve only once the real visual owner has committed its requested draw. */
+  fence?: () => void | Promise<void>;
+  dispose?: () => void | Promise<void>;
+  /** Await external resources and their committed draw before inspection/capture. */
+  ready?: (props: Props) => void | Promise<void>;
   document?: {
     body?: ReactFixtureDocumentTarget;
     html?: ReactFixtureDocumentTarget;
@@ -33,7 +45,15 @@ export function defineReactFixture<Props = Record<string, unknown>>(
     sceneproofReactFixture: {
       configurable: false,
       enumerable: false,
-      value: { document: definition.document ?? {} },
+      value: {
+        actions: definition.actions,
+        dispose: definition.dispose,
+        document: definition.document ?? {},
+        fence: definition.fence,
+        ready: definition.ready,
+        seek: definition.seek,
+        settle: definition.settle,
+      },
       writable: false,
     },
     sceneproofRenderer: {

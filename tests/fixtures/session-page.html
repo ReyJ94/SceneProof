@@ -1,0 +1,31 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+body {
+  font: 20px sans-serif;
+  color: white;
+  background: #18334d;
+}
+</style>
+<button id="replay" type="button">Replay</button>
+<output id="row">Source page ready</output>
+<script>
+"use strict";
+window.__pageReady = true;
+window.__SCENEPROOF_CONTROLS__ = {
+  actions: {
+    read: () => ({ row: document.querySelector("#row").textContent }),
+  },
+  fence() {
+    return Promise.resolve();
+  },
+  async seek(frame) {
+    document.querySelector("#row").textContent =
+      `Source page row ${frame.index}`;
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  },
+};
+document.querySelector("#replay").onclick = () => {
+  document.querySelector("#row").textContent = "Replay gesture received";
+};
+</script>

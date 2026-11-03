@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- `sceneproof session`: one headless browser lifecycle for a checkout-owned session script, with exact rational frame clocks, lazily streamed frames, native WebGPU readback, per-frame receipts with hashes, source overlays and pins, separate CPU and GPU timing windows, and `--resume` from committed frames. See `docs/session.md`.
+- `skills/sceneproof/references/long-captures.md`: how to record a real app or scene over time as layered frames for a compositor.
+- `SCENEPROOF_GPU_VENDOR`: optional expected adapter vendor; a session fails if the browser picked another GPU.
+- React fixtures may declare `ready: async (props) => …`; SceneProof awaits it before layout and capture.
+- `exo.json` for running the test suite under the exo job runner.
+
+### Changed
+
+- Rendering requests hardware graphics by default instead of forcing SwiftShader; `SCENEPROOF_GPU=software` reproduces software-only evidence.
+
 ## [0.8.1] - 2026-08-27
 
 ### Changed

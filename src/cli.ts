@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun --no-env-file
 
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -39,7 +39,9 @@ import type {
   ScoutReport,
 } from "./scene-schema.js";
 import { resolveSceneNodeId } from "./scene-schema.js";
+import { loadSession, runSession } from "./session.js";
 import type { SourceOverlay } from "./source-bundle.js";
+import { loadSourceOverlays, SourceOverlaySchema } from "./source-overlays.js";
 import { renderThreeContextPair } from "./three-context-pair.js";
 import { renderThreeDeliveryReview } from "./three-delivery-review.js";
 import { renderThreeMatrix as renderTemporalThreeMatrix } from "./three-matrix.js";
@@ -94,25 +96,7 @@ const MatrixManifestSchema = z.object({
       z.object({
         label: z.string().trim().min(1),
         props: PropsSchema,
-        sourceOverlays: z
-          .array(
-            z.object({
-              expectedDigest: z
-                .string()
-                .regex(/^sha256:[a-f0-9]{64}$/)
-                .optional(),
-              file: z.string().min(1),
-              replacements: z
-                .array(
-                  z.object({
-                    from: z.string().min(1),
-                    to: z.string(),
-                  })
-                )
-                .min(1),
-            })
-          )
-          .default([]),
+        sourceOverlays: z.array(SourceOverlaySchema).default([]),
       })
     )
     .min(2)
@@ -126,6 +110,7 @@ const VIEW_PRESETS = {
 } as const;
 
 type CommonOptions = {
+  sourceOverlays?: string;
   action?: string;
   actionInput?: string;
   alias?: string[];
@@ -210,6 +195,10 @@ function sourceOptions(command: Command): Command {
 
 function renderOptions(command: Command): Command {
   return sourceOptions(command)
+    .option(
+      "--source-overlays <json>",
+      "guarded in-memory React source overlays; never edits source files"
+    )
     .optionsGroup("Raster output:")
     .option(
       "--scale <number>",
@@ -481,6 +470,7 @@ async function scoutBriefing(report: ScoutReport) {
 }
 
 type PreparedSource = {
+  sourceOverlays: SourceOverlay[];
   absoluteEntry: string;
   actionInput: Record<string, unknown>;
   aliases: Record<string, string>;
@@ -546,6 +536,12 @@ async function prepareSource(
   if (renderer === "three" && raw.partialProps) {
     throw new Error("--partial-props requires a React component export.");
   }
+  const sourceOverlays = await loadSourceOverlays(raw.sourceOverlays);
+  if (renderer === "three" && sourceOverlays.length) {
+    throw new Error(
+      "CLI source overlays currently require a React source entry."
+    );
+  }
   return {
     absoluteEntry,
     actionInput: actionInput.value,
@@ -576,6 +572,7 @@ async function prepareSource(
     height,
     props: preparedProps,
     renderer,
+    sourceOverlays,
     threeBackend: ThreeBackendSchema.parse(raw.threeBackend),
     ...(timeMs === undefined ? {} : { timeMs }),
     width,
@@ -1548,6 +1545,7 @@ renderOptions(
         out,
         props: prepared.props,
         scale,
+        sourceOverlays: prepared.sourceOverlays,
         width: prepared.width,
       }),
       { command: "render", visual: true }
@@ -1674,6 +1672,7 @@ renderOptions(
         props: prepared.props,
         region,
         scale,
+        sourceOverlays: prepared.sourceOverlays,
         width: prepared.width,
       }),
       { command: "render-region", visual: true }
@@ -1751,6 +1750,75 @@ scoutOptions(
     });
   }
 );
+
+program
+  .command("session")
+  .description(
+    "run a source or loopback page evidence session in one headless lifecycle"
+  )
+  .argument(
+    "<session-module>",
+    "checkout-owned TypeScript/JavaScript session definition"
+  )
+  .option("--export <name>", "session export", "default")
+  .option("--props <file>", "JSON session inputs")
+  .option("--width <pixels>", "literal logical viewport width")
+  .option("--height <pixels>", "literal logical viewport height")
+  .option("--scale <density>", "fresh source pixel density")
+  .option("--region <x,y,width,height>", "default logical capture region")
+  .option(
+    "--source-overlays <json>",
+    "guarded in-memory source overlay manifest"
+  )
+  .requiredOption(
+    "--out <directory>",
+    "fresh artifact directory (existing only with --resume)"
+  )
+  .option(
+    "--resume",
+    "verify source/state/artifact identity and restore a saved timeline"
+  )
+  .action(
+    async (
+      entry: string,
+      raw: {
+        export: string;
+        props?: string;
+        width?: string;
+        height?: string;
+        scale?: string;
+        region?: string;
+        out: string;
+        resume?: boolean;
+        sourceOverlays?: string;
+      }
+    ) => {
+      const definition = await loadSession(resolve(entry), raw.export);
+      const width = raw.width
+        ? PositiveInteger.parse(raw.width)
+        : (definition.viewport?.width ?? 1280);
+      const height = raw.height
+        ? PositiveInteger.parse(raw.height)
+        : (definition.viewport?.height ?? 720);
+      output(
+        await runSession(definition, {
+          height,
+          modulePath: resolve(entry),
+          out: resolve(raw.out),
+          width,
+          ...(raw.scale ? { scale: PositiveScale.parse(raw.scale) } : {}),
+          ...(raw.props
+            ? { props: (await loadJsonInput(raw.props, "Session props")).value }
+            : {}),
+          ...(raw.region
+            ? { region: parseRegion(raw.region, { height, width }) }
+            : {}),
+          resume: raw.resume ?? false,
+          sourceOverlays: await loadSourceOverlays(raw.sourceOverlays),
+        })
+      );
+    }
+  );
 
 program
   .command("doctor")

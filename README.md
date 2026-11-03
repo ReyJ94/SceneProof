@@ -159,6 +159,13 @@ export const accountPanelFixture = defineReactFixture({
 });
 ```
 
+For asynchronous renderer resources, a fixture may declare
+`ready: async (props) => { await committedFrame; }`. SceneProof awaits this
+fixture-owned boundary before fonts, layout frames and inspection/capture.
+Rejection fails the command rather than publishing a partial render. This is
+for an actual completion signal (device initialization, pipeline compilation,
+submitted draw), not a fixed sleep that guesses when a scene might be ready.
+
 If an integration doesn't belong in a browser bundle, alias it to an explicit
 local stub. SceneProof records every substitution without touching application
 source:
@@ -419,6 +426,14 @@ sceneproof doctor
 clear-and-readback probe, and the active renderer and adapter. It exits non-zero
 when a requirement fails. Add `--require-backend both` when you need both
 graphics paths.
+
+Rendering now requests hardware by default, without forcing SwiftShader.
+The report's actual adapter/rasterizer remains the authority: a requested GPU
+is not proof that the driver selected it. To reproduce software-only evidence,
+use `SCENEPROOF_GPU=software sceneproof render ...`; `SCENEPROOF_GPU=hardware`
+explicitly selects the default launch policy. The same policy applies to doctor
+and render. Hybrid-GPU selection belongs to the process environment and driver;
+SceneProof does not change system graphics mode.
 
 </details>
 

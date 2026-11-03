@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -35,6 +41,35 @@ try {
   };
   assert.equal(props.model?.menuStage, "[missing: model.menuStage]");
   process.stdout.write("compiled typed-props smoke passed\n");
+  const session = join(directory, "external.session.ts");
+  const sessionOutput = join(directory, "session");
+  writeFileSync(
+    session,
+    `import {defineSession,frameClock} from 'sceneproof/session';
+    export default defineSession({source:{entry:${JSON.stringify(resolve(root, "tests/fixtures/session-react.tsx"))}},
+      viewport:{width:240,height:160},async run(s){await s.frames({id:'compiled',rows:[{index:0,clock:frameClock(0)}]});}});`
+  );
+  const captured = spawnSync(
+    executable,
+    ["session", session, "--out", sessionOutput],
+    {
+      cwd: directory,
+      encoding: "utf8",
+      env: { ...process.env, SCENEPROOF_HOME: root },
+    }
+  );
+  assert.equal(captured.status, 0, captured.stderr);
+  const sessionReport = JSON.parse(captured.stdout);
+  assert.equal(sessionReport.provenance.adapter.isFallbackAdapter, false);
+  assert.equal(
+    JSON.parse(
+      readFileSync(join(sessionOutput, "frames/compiled/0.json"), "utf8")
+    ).row.index,
+    0
+  );
+  process.stdout.write(
+    "compiled external-consumer source session smoke passed\n"
+  );
 } finally {
   rmSync(directory, { force: true, recursive: true });
 }

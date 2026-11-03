@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { runInNewContext } from "node:vm";
 
 import { resolveRuntimeDependency } from "../src/runtime-dependency.js";
 import {
@@ -20,7 +21,28 @@ import {
 const MISSING_MODULE_ERROR = /Could not resolve/;
 const AMBIGUOUS_OVERLAY_ERROR = /matched 2 locations.*exactly one/i;
 const OVERLAY_DIGEST_ERROR = /overlay digest mismatch/i;
+const TEXT_RED_500_CLASS = /\.text-red-500/;
 const UNUSED_OVERLAY_ERROR = /did not participate.*unused\.ts/i;
+test("browser source modules can emit ordinary dependency warnings without Node runtime failure", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-warning-"));
+  try {
+    const entry = join(directory, "source.js");
+    writeFileSync(entry, "process.emitWarning('source dependency warning');");
+    const bundle = await bundleBrowserDriver({
+      discoverCss: false,
+      entry,
+      extraCss: [],
+      source: `import ${JSON.stringify(entry)};`,
+    });
+    const warnings: unknown[] = [];
+    runInNewContext(bundle.javascript, {
+      console: { warn: (value: unknown) => warnings.push(value) },
+    });
+    assert.deepEqual(warnings, ["source dependency warning"]);
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
 
 test("retries one transient esbuild IPC service death", async () => {
   let attempts = 0;
@@ -86,6 +108,61 @@ test("resolves runtime dependencies hoisted beside an installed SceneProof packa
     } else {
       process.env.SCENEPROOF_HOME = previousHome;
     }
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("resolves SceneProof's own public React fixture export", () => {
+  assert.equal(
+    resolveRuntimeDependency("sceneproof/react"),
+    resolve(import.meta.dir, "../src/react-fixture.ts")
+  );
+});
+
+test("bundles a consumer fixture through SceneProof's public React export", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-self-export-"));
+  try {
+    const entry = resolve(directory, "fixture.tsx");
+    writeFileSync(
+      entry,
+      `import { defineReactFixture } from "sceneproof/react";
+       export const fixture = defineReactFixture({ render: () => null });\n`
+    );
+
+    const result = await bundleBrowserDriver({
+      discoverCss: false,
+      entry,
+      extraCss: [],
+      source: `import { fixture } from ${JSON.stringify(entry)}; globalThis.__fixture = fixture;`,
+    });
+
+    assert.ok(
+      result.inputs.includes(
+        resolve(import.meta.dir, "../src/react-fixture.ts")
+      )
+    );
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("compiles a consumer Tailwind import from SceneProof's runtime dependencies", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "sceneproof-tailwind-runtime-"));
+  try {
+    const entry = resolve(directory, "entry.ts");
+    const stylesheet = resolve(directory, "styles.css");
+    writeFileSync(entry, `export const className = "text-red-500";\n`);
+    writeFileSync(stylesheet, `@import "tailwindcss";\n`);
+
+    const result = await bundleBrowserDriver({
+      discoverCss: false,
+      entry,
+      extraCss: [stylesheet],
+      source: `import { className } from ${JSON.stringify(entry)}; globalThis.__className = className;`,
+    });
+
+    assert.match(result.css, TEXT_RED_500_CLASS);
+  } finally {
     rmSync(directory, { force: true, recursive: true });
   }
 });

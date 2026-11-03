@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import type { Browser, Page } from "playwright-core";
+import { browserGpuArgs } from "./browser-gpu.js";
 
 import { loadRuntimeDependency } from "./runtime-dependency.js";
 
@@ -86,9 +87,23 @@ export async function diagnoseBrowser(): Promise<{
         } else if (renderer !== null) {
           rendererName = String(renderer);
         }
-        const adapter = await navigator.gpu?.requestAdapter({
-          powerPreference: "high-performance",
-        });
+        // A fresh Linux GPU process can return null while its native adapter
+        // is starting. Bound the readiness probe; do not substitute software.
+        let adapter: GPUAdapter | null | undefined;
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          // biome-ignore lint/performance/noAwaitInLoops: Adapter readiness retries must be sequential, not concurrent requests against the same starting GPU process.
+          adapter = await navigator.gpu?.requestAdapter({
+            powerPreference: "high-performance",
+          });
+          if (adapter || !navigator.gpu) {
+            break;
+          }
+          if (attempt < 2) {
+            await new Promise((resolve) =>
+              setTimeout(resolve, 100 * 3 ** attempt)
+            );
+          }
+        }
         const text = (value: unknown): string | null =>
           typeof value === "string" && value.length > 0 ? value : null;
         let rendered = false;
@@ -231,35 +246,43 @@ export async function diagnoseBrowser(): Promise<{
 }
 
 export async function launchBrowser(
-  options: { threeBackend?: "webgl" | "webgpu" } = {}
+  options: { threeBackend?: "webgl" | "webgpu"; ownsSignals?: boolean } = {}
 ): Promise<Browser> {
   const { chromium } =
     await loadRuntimeDependency<typeof import("playwright-core")>(
       "playwright-core"
     );
   try {
-    return await chromium.launch({
+    const browser = await chromium.launch({
       args: [
         "--no-sandbox",
         "--disable-dev-shm-usage",
         "--enable-webgl",
         "--ignore-gpu-blocklist",
-        ...(options.threeBackend === "webgpu" && process.platform === "linux"
-          ? [
-              "--disable-vulkan-surface",
-              "--enable-accelerated-2d-canvas",
-              "--enable-features=Vulkan",
-              "--enable-unsafe-webgpu",
-              "--use-angle=vulkan",
-              "--use-gpu-in-tests",
-              "--use-vulkan=swiftshader",
-              "--use-webgpu-adapter=swiftshader",
-            ]
-          : ["--use-angle=swiftshader"]),
+        ...browserGpuArgs(options.threeBackend, process.env.SCENEPROOF_GPU),
       ],
       executablePath: chromePath(),
+      handleSIGHUP: !options.ownsSignals,
+      handleSIGINT: !options.ownsSignals,
+      handleSIGTERM: !options.ownsSignals,
       headless: true,
     });
+    try {
+      // Browser launch does not mean its GPU process has finished discovery.
+      // On NVIDIA/Vulkan, a canvas created before that boundary rendered once
+      // then lost its context. SystemInfo awaits GPU discovery without a sleep,
+      // fixture retry, backend substitution, or claiming a usable GPU exists.
+      const session = await browser.newBrowserCDPSession();
+      try {
+        await session.send("SystemInfo.getInfo");
+      } finally {
+        await session.detach();
+      }
+      return browser;
+    } catch (error) {
+      await browser.close();
+      throw error;
+    }
   } catch (error) {
     const detail =
       error instanceof Error

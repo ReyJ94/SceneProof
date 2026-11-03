@@ -10,6 +10,7 @@
     "uiscene": "./src/cli.ts"
   },
   "exports": {
+    "./session": "./src/session.ts",
     "./react": "./src/react-fixture.ts",
     "./three": "./src/three-fixture.ts"
   },
@@ -21,7 +22,7 @@
     "CHANGELOG.md",
     "LICENSE"
   ],
-  "packageManager": "bun@1.4.0",
+  "packageManager": "bun@1.4.4",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ReyJ94/SceneProof.git"
@@ -44,21 +45,21 @@
     "testing-harness"
   ],
   "scripts": {
-    "build": "bun build --compile --allow-unresolved '' --outfile dist/sceneproof src/cli.ts",
-    "check": "bun run lint && bun run typecheck && bun run test && bun run build && bun run test:compiled",
-    "cli": "bun src/cli.ts",
+    "build": "bun --no-env-file build --compile --allow-unresolved '' --outfile dist/sceneproof src/cli.ts",
+    "check": "bun --no-env-file run lint && bun --no-env-file run typecheck && bun --no-env-file run test && bun --no-env-file run build && bun --no-env-file run test:compiled",
+    "cli": "bun --no-env-file src/cli.ts",
     "format": "ultracite fix .",
     "format:check": "ultracite check .",
     "lint": "ultracite check .",
     "lint:fix": "ultracite fix .",
-    "prepack": "bun run check",
-    "test": "bun test --timeout 30000 tests/agent-surface.test.ts tests/cli.test.ts tests/frame-schedule.test.ts tests/installation-diagnostics.test.ts tests/react-renderer.test.ts tests/source-bundle.test.ts",
-    "test:cli": "bun test --timeout 30000 tests/cli.test.ts",
-    "test:compiled": "bun tests/compiled-cli-smoke.ts",
+    "prepack": "bun --no-env-file run check",
+    "test": "bun --no-env-file test --timeout 0 tests/agent-surface.test.ts tests/browser-gpu.test.ts tests/browser-runtime.test.ts tests/cli.test.ts tests/frame-schedule.test.ts tests/installation-diagnostics.test.ts tests/react-renderer.test.ts tests/source-bundle.test.ts tests/session-store.test.ts tests/session.test.ts tests/session-gpu.test.ts tests/session-cli.test.ts",
+    "test:cli": "bun --no-env-file test --timeout 0 tests/cli.test.ts",
+    "test:compiled": "bun --no-env-file tests/compiled-cli-smoke.ts",
     "typecheck": "tsc --noEmit"
   },
   "engines": {
-    "bun": ">=1.4.0"
+    "bun": ">=1.4.4"
   },
   "dependencies": {
     "@tailwindcss/postcss": "4.3.3",

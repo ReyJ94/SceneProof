@@ -1,0 +1,4 @@
+{
+  "layers": ["node_modules"],
+  "tools": ["bun"]
+}

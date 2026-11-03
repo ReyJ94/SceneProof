@@ -14,6 +14,10 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
+const expectedRasterizer =
+  process.env.SCENEPROOF_GPU === "software"
+    ? "swiftshader-cpu"
+    : "hardware-or-unknown";
 const packageVersion = (
   JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")) as {
     version: string;
@@ -1992,7 +1996,7 @@ test("captures deterministic transition frames in one scene lifecycle", () => {
     }
     assert.ok(existsSync(report.artifacts.contactSheet));
     assert.ok(existsSync(report.artifacts.manifest));
-    assert.equal(report.rasterizer.kind, "swiftshader-cpu");
+    assert.equal(report.rasterizer.kind, expectedRasterizer);
     assert.match(
       report.recommendations.inspectInterveningMotion.command,
       DENSE_CHECKPOINT_RANGE
@@ -2244,7 +2248,9 @@ test("doctor reports Chromium and WebGL readiness with actionable execution guid
   assert.equal(report.webgpu.renderError, null);
   assert.equal(typeof report.webgpu.adapter.isFallbackAdapter, "boolean");
   assert.ok(
-    ["software-cpu", "swiftshader-cpu"].includes(report.rasterizer.kind)
+    ["hardware-or-unknown", "software-cpu", "swiftshader-cpu"].includes(
+      report.rasterizer.kind
+    )
   );
   assert.match(report.executionGuidance, DIRECT_COMMAND_GUIDANCE);
   assert.match(report.executionGuidance, LOCAL_RENDER_GUIDANCE);
@@ -2798,7 +2804,7 @@ test("render-region rebuilds a Three.js camera patch instead of cropping an old 
     assert.deepEqual(pngSize(output), report.renderedSize);
     assert.equal(report.checks.regionValid, true);
     assert.equal(report.checks.requestedScaleAchieved, true);
-    assert.equal(report.rasterizer.kind, "swiftshader-cpu");
+    assert.equal(report.rasterizer.kind, expectedRasterizer);
     assert.ok(report.stats.coverageFraction > 0);
     assert.ok(report.stats.luminance.p99 >= report.stats.luminance.p90);
   } finally {
@@ -2840,7 +2846,7 @@ test("render gives an agent explicit target perspective and camera zoom controls
     assert.equal(report.camera.elevation, 0);
     assert.equal(report.camera.azimuth, -90);
     assert.equal(report.renderedSize.width, 640);
-    assert.equal(report.rasterizer.kind, "swiftshader-cpu");
+    assert.equal(report.rasterizer.kind, expectedRasterizer);
     assert.equal(report.quality.judgeable, true);
     assert.equal(report.quality.limitingFactor, null);
     assert.ok(report.stats.coverageFraction > 0);
@@ -2894,7 +2900,10 @@ test("scout builds one ranked multi-view evidence set around a semantic focus no
     assert.equal(briefing.candidates.total, 13);
     assert.equal(briefing.candidates.shown.length, 3);
     assert.equal(briefing.candidates.omitted, 10);
-    assert.ok(Buffer.byteLength(result.stdout) < 4000);
+    // The checkout path appears in suggested commands; only the brief itself is budgeted.
+    assert.ok(
+      Buffer.byteLength(result.stdout.replaceAll(root, "<root>")) < 4000
+    );
     for (const candidate of briefing.candidates.shown) {
       assert.deepEqual(
         Object.keys(candidate).sort(),
@@ -3030,7 +3039,7 @@ test("scout identifies a framed dark target as contrast-limited instead of frami
     const report = JSON.parse(result.stdout);
     assert.equal(report.diagnosis.limitingFactor, "contrast");
     assert.equal(report.diagnosis.higherScaleWouldHelp, false);
-    assert.equal(report.rasterizer.kind, "swiftshader-cpu");
+    assert.equal(report.rasterizer.kind, expectedRasterizer);
   } finally {
     rmSync(directory, { force: true, recursive: true });
   }

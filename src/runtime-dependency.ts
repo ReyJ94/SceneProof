@@ -178,7 +178,10 @@ function installedPackageRoot(
 export function resolveRuntimeDependency(name: string): string {
   const root = toolRoot();
   const { packageName, remainder, subpath } = packageRequest(name);
-  const packageRoot = installedPackageRoot(root, packageName);
+  const packageRoot =
+    ["sceneproof", "uiscene"].includes(packageName) && isToolRoot(root)
+      ? root
+      : installedPackageRoot(root, packageName);
   if (!packageRoot) {
     throw new Error(
       `Runtime dependency ${packageName} is not installed beside ${root} or in an ancestor package tree. Reinstall SceneProof with its dependencies.`
