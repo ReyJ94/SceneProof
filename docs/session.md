@@ -86,11 +86,13 @@ integer-millisecond clock. Only the current image is retained in memory.
 
 `--resume` requires the same source/bundle, module, props, routes, overlays,
 viewport/DPR, executing engine fingerprint, backend, adapter, driver selection and explicit domain identity
-(camera, seeds, asset/manifest pins). It verifies each saved PNG hash and row
-identity, then invokes `restore(lastCompletedRow)` before continuing. Missing
-receipts are incomplete frames, even when an orphan PNG exists. Corruption,
-changed inputs, non-prefix checkpoints and missing restore capability fail
-closed. Restore must rebuild actual domain state; never reuse a dead GPU object
+(camera, seeds, asset/manifest pins) and default `--region`. Every committed
+frame of a sequence must be matched, in order, by its first incoming rows (same
+row, crop and saved PNG hash) before any source action; only then does it invoke
+`restore(lastCompletedRow)` once and continue. Missing receipts are incomplete
+frames, even when an orphan PNG exists. Corruption, changed inputs or crop, a
+non-prefix checkpoint, rows that end before every committed frame is matched,
+and missing restore capability fail closed. Restore must rebuild actual domain state; never reuse a dead GPU object
 or silently replay a live/provider/audio turn. Completed artifacts remain
 immutable; attempt cleanup and completion receipts have independent names.
 

@@ -850,6 +850,8 @@ export async function runSession(
       nativeCapture: definition.nativeCapture ?? "readback",
       overlays,
       props,
+      // Default capture crop; a resumed run must capture the same region.
+      region: options.region ?? null,
       routes: (definition.routes ?? []).map((route) => ({
         identity: route.identity,
         pattern: route.pattern,

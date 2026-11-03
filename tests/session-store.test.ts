@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -128,4 +129,85 @@ test("streaming accepts a full 3967-row trajectory and commits before pulling th
     row: { clock: unknown };
   };
   expect(last.row.clock).toEqual({ denominator: 30, numerator: 3966 });
+});
+
+type Region = { x: number; y: number; width: number; height: number };
+/** Streams `indices` into `root` with a stand-in capture; records every source action. */
+function runRows(
+  root: string,
+  indices: number[],
+  options: { resume: boolean; region?: Region; actions?: string[] }
+) {
+  const actions = options.actions ?? [];
+  return streamFrames({
+    attempt: randomUUID(),
+    directory: root,
+    identity: "test",
+    resume: options.resume,
+    sequence: {
+      id: "rows",
+      ...(options.region ? { region: options.region } : {}),
+      restore: (row) => {
+        actions.push(`restore ${row.index}`);
+      },
+      rows: indices.map((index) => ({ clock: frameClock(index), index })),
+    },
+    session: {
+      capture({ name }) {
+        actions.push("capture");
+        return atomicArtifact(root, name, new Uint8Array([1]));
+      },
+      evidence: (name, value) => atomicArtifact(root, name, canonical(value)),
+      invoke(name) {
+        actions.push(name);
+        return Promise.resolve();
+      },
+    },
+  });
+}
+
+test("resume reuses an unchanged committed prefix and restores once before new frames", async () => {
+  const root = await directory();
+  await runRows(root, [0, 1], { resume: false });
+  const actions: string[] = [];
+  expect(await runRows(root, [0, 1, 2], { actions, resume: true })).toEqual({
+    committed: 1,
+    reused: 2,
+  });
+  expect(actions).toEqual(["restore 1", "seek", "fence", "capture"]);
+});
+
+test("resume rejects a changed crop before any source action", async () => {
+  const root = await directory();
+  const region = { height: 1, width: 1, x: 0, y: 0 };
+  await runRows(root, [0], { region, resume: false });
+  const actions: string[] = [];
+  await expect(
+    runRows(root, [0, 1], {
+      actions,
+      region: { ...region, x: 1 },
+      resume: true,
+    })
+  ).rejects.toThrow("crop changed");
+  expect(actions).toEqual([]);
+});
+
+test("resume fails when rows end before every committed frame is matched", async () => {
+  const root = await directory();
+  await runRows(root, [0, 1], { resume: false });
+  const actions: string[] = [];
+  await expect(runRows(root, [0], { actions, resume: true })).rejects.toThrow(
+    "ended after 1 of 2"
+  );
+  expect(actions).toEqual([]);
+});
+
+test("resume rejects a committed frame that is not a prefix before capturing", async () => {
+  const root = await directory();
+  await runRows(root, [1], { resume: false });
+  const actions: string[] = [];
+  await expect(
+    runRows(root, [0, 1], { actions, resume: true })
+  ).rejects.toThrow("not a prefix");
+  expect(actions).toEqual([]);
 });

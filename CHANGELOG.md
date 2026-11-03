@@ -10,6 +10,10 @@
 - React fixtures may declare `ready: async (props) => …`; SceneProof awaits it before layout and capture.
 - `exo.json` for running the test suite under the exo job runner.
 
+### Fixed
+
+- `session --resume` reuses committed frames only when the incoming rows match all of them, in order, with the same crop; it no longer reuses frames from a different crop, reports success when rows end early, or captures before detecting a non-prefix checkpoint.
+
 ### Changed
 
 - Rendering requests hardware graphics by default instead of forcing SwiftShader; `SCENEPROOF_GPU=software` reproduces software-only evidence.
